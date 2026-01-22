@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: dash-login-app
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+    startCommand: gunicorn app:server --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: SECRET_KEY
+        generateValue: true
+      - key: GEOJSON_URL
+        value: https://raw.githubusercontent.com/vvolakakis/dash-dashboard/main/data/my_data.geojson
