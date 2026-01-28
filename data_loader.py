@@ -113,7 +113,7 @@ def is_selector_cached() -> bool:
 # Add these global variables at the top with other caches
 _truck_chargers_cache = None
 
-def get_truck_chargers(csv_path: str = "data/truck_chargers.csv"):
+def get_truck_chargers(shp_path: str = "data/Electric_Vehicle_Charging_Stations.shp"):
     """
     Load heavy/medium-duty truck charging station locations.
     
@@ -127,41 +127,39 @@ def get_truck_chargers(csv_path: str = "data/truck_chargers.csv"):
             logger.info("Loading truck charger locations...")
             
             # Read CSV
-            df = pd.read_csv(csv_path)
+            gdf = gpd.read_file(shp_path)
             
-            # Create GeoDataFrame from lat/lon
-            gdf = gpd.GeoDataFrame(
-                df,
-                geometry=gpd.points_from_xy(df['Longitude'], df['Latitude']),
-                crs='EPSG:4326'
-            )
+            # # Create GeoDataFrame from lat/lon
+            # gdf = gpd.GeoDataFrame(
+            #     df,
+            #     geometry=gpd.points_from_xy(df['Longitude'], df['Latitude']),
+            #     crs='EPSG:4326'
+            # )
             
             # Clean up column names and keep only relevant columns
-            gdf = gdf.rename(columns={
-                'Station Name': 'name',
-                'Street Address': 'address',
-                'City': 'city',
-                'State': 'state',
-                'ZIP': 'zip',
-                'EV Level2 EVSE Num': 'level2_ports',
-                'EV DC Fast Count': 'dcfc_ports',
-                'Access Days Time': 'hours',
-                'EV Pricing': 'pricing',
-                'Latitude': 'lat',
-                'Longitude': 'lon'
-            })
+            # gdf = gdf.rename(columns={
+            #     'Station Name': 'name',
+            #     'Street Address': 'address',
+            #     'City': 'city',
+            #     'State': 'state',
+            #     'ZIP': 'zip',
+            #     'EV Level2 EVSE Num': 'level2_ports',
+            #     'EV DC Fast Count': 'dcfc_ports',
+            #     'Access Days Time': 'hours',
+            #     'EV Pricing': 'pricing',
+            #     'Latitude': 'lat',
+            #     'Longitude': 'lon'
+            # })
             
             # Select relevant columns
-            cols_to_keep = ['name', 'address', 'city', 'state', 'zip', 
-                           'level2_ports', 'dcfc_ports', 'hours', 'pricing', 
-                           'lat', 'lon', 'geometry']
+            cols_to_keep = ['id', 'city', 'state', 'zip', 'geometry']
             gdf = gdf[[col for col in cols_to_keep if col in gdf.columns]]
             
             _truck_chargers_cache = gdf
             logger.info(f"✓ Loaded {len(gdf)} truck charging stations")
             
         except FileNotFoundError:
-            logger.warning(f"Truck charger file not found at {csv_path}")
+            logger.warning(f"Truck charger file not found at {shp_path}")
             _truck_chargers_cache = gpd.GeoDataFrame()
         except Exception as e:
             logger.error(f"Error loading truck chargers: {e}", exc_info=True)

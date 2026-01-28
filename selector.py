@@ -113,13 +113,11 @@ class TruckChargingSiteSelector:
             
             # Infrastructure sub-weights (normalized in calculation)
             'infrastructure_weights': {
-                'truck_charger_gap_weight': 0.20,
-                'park_ride_weight': 0.15,
-                'government_weight': 0.15,
-                'colocation_weight': 0.10,
-                'expansion_weight': 0.05,
-                'electric_grid_weight': 0.35
-            },
+                    # Only the requested subfactors
+                    'truck_charger_gap_weight': 0.45,
+                    'park_ride_weight': 0.30,
+                    'government_weight': 0.25
+                },
             
             # Accessibility sub-weights (must sum to 1.0)
             'accessibility_weights': {
@@ -130,11 +128,11 @@ class TruckChargingSiteSelector:
             
             # Equity sub-weights (normalized in calculation)
             'equity_weights': {
-                'ej_priority_weight': 0.4,
-                'landuse_suit_weight': 0.35,
-                'tier_bonus_weight': 0.15,
-                'protected_penalty_weight': 0.1
-            },
+                    'ej_priority_weight': 0.40,
+                    'landuse_suit_weight': 0.35,
+                    'commercial_industrial_weight': 0.15,
+                    'protected_penalty_weight': 0.10
+                },
             
             # Analysis mode flags
             'secondary_corridor_mode': False,
@@ -153,6 +151,7 @@ class TruckChargingSiteSelector:
         df = self.gdf.copy()
         feasible = pd.Series(True, index=df.index)
         constraints = self.config['constraints']
+        min_person = constraints.get('min_person_trips', 10)
         
         print("  Applying minimal constraints:")
         
@@ -165,10 +164,36 @@ class TruckChargingSiteSelector:
         if 'equity_1_trips' in df.columns:
             person_trips += df['equity_1_trips'].fillna(0)
 
-        # Absolute minimal bar: at least 1 person trip (no hard-coded % of user threshold)
+        # Absolute minimal bar: at least 10 person trip (no hard-coded % of user threshold)
         if person_trips.max() > 0:
-            feasible &= person_trips >= 1
-            print(f"    Person trips ≥ 1: {feasible.sum()} tracts pass")
+            feasible &= person_trips >= min_person
+            print(f"    Person trips ≥ 10: {feasible.sum()} tracts pass")
+
+
+        # Constraint 1.5 (optional): Only include rural tracts
+        # Controlled by UI toggle "Only include rural tracts".
+        # Preferred column is `rural_flag` (1=rural, 0=not rural), but we fall back
+        # to a few common schemas if needed.
+        if constraints.get('only_rural', False):
+            rural_mask = None
+
+            if 'rural_flag' in df.columns:
+                # Handle numeric, boolean, and string representations robustly
+                rf = df['rural_flag']
+                rf_num = pd.to_numeric(rf, errors='coerce')
+                rural_mask = (rf_num.fillna(0).astype(float) >= 1)
+            elif 'is_rural' in df.columns:
+                rural_mask = df['is_rural'].fillna(False).astype(bool)
+            elif 'rural' in df.columns:
+                rural_mask = df['rural'].fillna(False).astype(bool)
+            elif 'urban_rural_context' in df.columns:
+                rural_mask = df['urban_rural_context'].fillna('').astype(str).str.lower().eq('rural')
+
+            if rural_mask is not None:
+                feasible &= rural_mask
+                print(f"    Rural-only filter enabled: {feasible.sum()} tracts pass")
+            else:
+                print("    Rural-only filter enabled, but no rural flag column found (expected `rural_flag`)")
 
 
         # Constraint 2: Not almost entirely protected land
@@ -331,26 +356,27 @@ class TruckChargingSiteSelector:
         return demand_score
 
     def calculate_infrastructure_score(self, existing_charging_gdf=None):
-        """
-        Calculate infrastructure score (25% of total).
+        """Calculate infrastructure score.
+    
+        Per current dashboard design, this score ONLY uses:
+          - Ability to fill gaps in charging network (truck charger gap)
+          - Co-location with transit & transit parking lots (Park & Ride)
+          - Co-location with government spaces
+    
+        All other infrastructure signals (e.g., grid, retail co-location, expansion)
+        are intentionally excluded.
         """
         df = self.gdf.copy()
         scores = pd.Series(0, index=df.index)
-        
-        # IMPORTANT: merge user-provided weights with defaults so missing keys
-        # never crash scoring when the UI/config evolves.
+    
+        # Merge user-provided weights with defaults so missing keys never crash scoring
         _infra_defaults = {
-            'truck_charger_gap_weight': 0.20,
-            'park_ride_weight': 0.15,
-            'government_weight': 0.15,
-            # Legacy key (kept for backwards compatibility). If not present in
-            # config, it will default to 0.0 and effectively be disabled.
-            'colocation_weight': 0.00,
-            'expansion_weight': 0.05,
-            'electric_grid_weight': 0.35
+            'truck_charger_gap_weight': 0.45,
+            'park_ride_weight': 0.30,
+            'government_weight': 0.25,
         }
         infra_weights = {**_infra_defaults, **(self.config.get('infrastructure_weights') or {})}
-        
+    
         # Allow users to disable this entire section by setting ALL component weights to 0
         try:
             infra_total = float(sum([float(v or 0) for v in infra_weights.values()]))
@@ -359,80 +385,201 @@ class TruckChargingSiteSelector:
         if infra_total == 0:
             print("   Infrastructure component weights set to 0 → infrastructure score disabled")
             return pd.Series(0, index=df.index)
-        
-        # Normalize if user provided integer points (sum ~100)
+    
+        # Normalize in case user provided point-style weights (sum ~100)
         infra_weights = self._normalize_weight_dict(infra_weights)
-        
-        # Component 1: Truck charger gaps (NO DENSITY - distance metric)
+    
+        # ---- Infrastructure scoring debug helpers ----
+        def _pct(x: float) -> float:
+            return 100.0 * float(x)
+
+        def _dist_stats(name: str, s: pd.Series):
+            s_num = pd.to_numeric(s, errors="coerce")
+            nan_rate = s_num.isna().mean()
+            s_fill = s_num.fillna(0)
+
+            zero_rate = (s_fill == 0).mean()
+            arr = s_num.dropna().to_numpy(dtype=float)
+
+            if arr.size == 0:
+                stats = {"min": np.nan, "p10": np.nan, "p50": np.nan, "p90": np.nan, "max": np.nan}
+            else:
+                stats = {
+                    "min": float(np.min(arr)),
+                    "p10": float(np.percentile(arr, 10)),
+                    "p50": float(np.percentile(arr, 50)),
+                    "p90": float(np.percentile(arr, 90)),
+                    "max": float(np.max(arr)),
+                }
+
+            print(f"   {name} raw:")
+            print(f"     count={int(s_num.shape[0])}, nan%={_pct(nan_rate):.1f}%, zero% (after fill)={_pct(zero_rate):.1f}%")
+            print(f"     min={stats['min']:.3f}, p10={stats['p10']:.3f}, median={stats['p50']:.3f}, p90={stats['p90']:.3f}, max={stats['max']:.3f}")
+
+            return s_num, s_fill, stats
+
+        def _score_stats(name: str, score: pd.Series):
+            s = pd.to_numeric(score, errors="coerce").fillna(0)
+            zero_rate = (s == 0).mean()
+            arr = s.to_numpy(dtype=float)
+
+            print(f"   {name} score:")
+            print(f"     zero%={_pct(zero_rate):.1f}%")
+            print(f"     min={np.min(arr):.2f}, p10={np.percentile(arr,10):.2f}, median={np.percentile(arr,50):.2f}, p90={np.percentile(arr,90):.2f}, max={np.max(arr):.2f}")
+
+        # ---- Component 1: Truck charger gaps (distance; higher distance = higher "gap" score) ----
         if 'nearest_truck_charger_mi' in df.columns:
-            distances = df['nearest_truck_charger_mi']
-            gap_score = 100 * (distances.clip(0, 50) / 50)
-            scores += gap_score * infra_weights['truck_charger_gap_weight']
-            
-            print(f"   Truck charger gap scoring:")
-            print(f"     Avg distance to nearest: {distances.mean():.1f} miles")
-        # Component 3: Park & ride (NO DENSITY - 5mi buffer)
+            raw_dist, dist_fill, raw_stats = _dist_stats("Truck charger gap distance (mi)", df['nearest_truck_charger_mi'])
+
+            # Use p90 distance as dynamic cap (avoid divide-by-zero)
+            p90_dist = raw_stats["p90"]
+            cap = p90_dist if (p90_dist is not None and np.isfinite(p90_dist) and p90_dist > 0) else 1.0
+
+            gap_score = 100.0 * (dist_fill.clip(0, cap) / cap)
+            gap_score = gap_score.clip(0, 100)
+
+            w = float(infra_weights.get('truck_charger_gap_weight', 0) or 0)
+            scores += gap_score * w
+
+            print("   Truck charger gap scoring:")
+            print(f"     cap used (p90 distance): {cap:.3f} mi")
+            print(f"     weight: {w:.4f}")
+            _score_stats("Truck charger gap", gap_score)
+            print(f"     median contribution to infra (score * weight): {(gap_score.median() * w):.2f}")
+
+        # ---- Component 2: Park & Ride (5mi buffer) ----
         if 'park_ride_spaces_within_5mi' in df.columns:
-            park_ride_score = self._normalize_score(df['park_ride_spaces_within_5mi'])
-            scores += park_ride_score * infra_weights['park_ride_weight']
+            raw_pr, pr_fill, _ = _dist_stats("Park & Ride spaces within 5mi (raw)", df['park_ride_spaces_within_5mi'])
 
-        # Component: Government & social services co-location (prefer 5mi buffer; fallback to in-tract)
-        gov_within = None
-        for col in ['government_social_services_within_5mi', 'government_social_services within_5mi', 'government_social_services_within5mi']:
-            if col in df.columns:
-                gov_within = col
-                break
-        if gov_within is not None:
-            gov_score = self._normalize_score(df[gov_within])
-            scores += gov_score * infra_weights.get('government_weight', 0)
-        else:
-            gov_in = None
-            for col in ['government_social_services_in_tract', 'government social services in tract', 'government_social_services_intract']:
-                if col in df.columns:
-                    gov_in = col
-                    break
-            if gov_in is not None:
-                gov_score = self._normalize_score_with_density(df[gov_in], use_density=True)
-                scores += gov_score * infra_weights.get('government_weight', 0)
+            park_ride_score = self._normalize_score(pr_fill)
+            park_ride_score = pd.to_numeric(park_ride_score, errors="coerce").fillna(0).clip(0, 100)
 
-        # Component 5: Co-location (USE DENSITY for in-tract POIs)
-        if 'retail_commercial_in_tract' in df.columns:
-            # In-tract metrics should use density
-            colocation_base = self._normalize_score_with_density(
-                df['retail_commercial_in_tract'], 
-                use_density=True
-            ) * 0.5
+            w = float(infra_weights.get('park_ride_weight', 0) or 0)
+            scores += park_ride_score * w
+
+            print("   Park & Ride scoring:")
+            print(f"     weight: {w:.4f}")
+            _score_stats("Park & Ride", park_ride_score)
+            print(f"     median contribution to infra (score * weight): {(park_ride_score.median() * w):.2f}")
+
+        # ---- Component 3: Government spaces (5mi buffer) ----
+        if 'government_social_services_within_5mi' in df.columns:
+            raw_gov, gov_fill, _ = _dist_stats("Government social services within 5mi (raw)", df['government_social_services_within_5mi'])
+
+            gov_score = self._normalize_score(gov_fill)
+            gov_score = pd.to_numeric(gov_score, errors="coerce").fillna(0).clip(0, 100)
+
+            w = float(infra_weights.get('government_weight', 0) or 0)
+            scores += gov_score * w
+
+            print("   Government scoring:")
+            print(f"     weight: {w:.4f}")
+            _score_stats("Government", gov_score)
+            print(f"     median contribution to infra (score * weight): {(gov_score.median() * w):.2f}")
             
-            # Rest stops are 5mi buffer - no density needed
-            if 'rest_stops_within_5mi' in df.columns:
-                rest_stop_score = self._normalize_score(df['rest_stops_within_5mi']) * 0.3
-                colocation_base += rest_stop_score
-            
-            # POI density already is a density metric - no conversion needed
-            if 'poi_density_per_sq_mi' in df.columns:
-                poi_density_score = self._normalize_score(df['poi_density_per_sq_mi']) * 0.2
-                colocation_base += poi_density_score
-            
-            colocation_score = colocation_base.clip(0, 100)
-            # Use .get() so missing config keys never raise KeyError
-            scores += colocation_score * infra_weights.get('colocation_weight', 0)
-            
-            print(f"   Co-location scoring:")
-            print(f"     Avg retail/commercial: {df['retail_commercial_in_tract'].mean():.1f}")
-        
-        # Component 6: Expansion potential (NO DENSITY - absolute space)
-        if 'estimated_park_ride_area_acres' in df.columns:
-            expansion_score = self._normalize_score(df['estimated_park_ride_area_acres'])
-            scores += expansion_score * infra_weights['expansion_weight']
-        
-        # Component 7: Grid infrastructure (handled in separate method)
-        grid_component_score = self._calculate_grid_infrastructure_score(df)
-        scores += grid_component_score * infra_weights['electric_grid_weight']
-        
         infrastructure_score = np.clip(scores, 0, 100)
         return infrastructure_score
 
+    def calculate_accessibility_score(self):
+        """Calculate accessibility score (20% of total).
 
+        Per your streamlined subfactor list, Accessibility uses ONLY:
+        - Network Density
+        - Co-location with grocery stores
+        - Co-location with gas stations
+
+        Returns:
+            pd.Series of 0-100 accessibility scores.
+        """
+        df = self.gdf.copy()
+        scores = pd.Series(0, index=df.index)
+
+        secondary_corridor_mode = self.config.get('secondary_corridor_mode', False)
+
+        if secondary_corridor_mode:
+            # Preserve existing behavior: if the app is run in "secondary corridors only" mode,
+            # use the prepared corridor-only accessibility score if present.
+            print("   Accessibility scoring mode: SECONDARY CORRIDORS ONLY")
+            if 'secondary_corridor_only_score' in df.columns:
+                corridor_score = df['secondary_corridor_only_score'].fillna(0)
+                scores += corridor_score
+                print(f"     Tracts with secondary corridor access: {(corridor_score > 0).sum()}")
+        else:
+            print("   Accessibility scoring mode: ALL ROAD TYPES")
+
+            access_weights = self.config.get('accessibility_weights', {
+                'network_weight': 0.50,
+                'grocery_weight': 0.25,
+                'gas_station_weight': 0.25
+            })
+
+            # Allow users to disable this entire section by setting ALL component weights to 0
+            try:
+                access_total = float(sum([float(v or 0) for v in access_weights.values()]))
+            except Exception:
+                access_total = 1.0
+            if access_total == 0:
+                print("   Accessibility component weights set to 0 → accessibility score disabled")
+                return pd.Series(0, index=df.index)
+
+            access_weights = self._normalize_weight_dict(access_weights)
+
+            # Network Density (D3AAO is already a density metric: mi/sq mi) - no conversion
+            if 'D3AAO' in df.columns:
+                network_score = self._normalize_score(df['D3AAO'])
+                scores += network_score * access_weights.get('network_weight', 0)
+
+            # Co-location with grocery stores (prefer 5mi buffer; fallback to in-tract)
+            grocery_within = None
+            for col in [
+                'grocery_stores_within_5mi',
+                'grocery_within_5mi',
+                'grocery stores within_5mi',
+                'grocery_stores within_5mi'
+            ]:
+                if col in df.columns:
+                    grocery_within = col
+                    break
+            if grocery_within is not None:
+                grocery_score = self._normalize_score(df[grocery_within])
+                scores += grocery_score * access_weights.get('grocery_weight', 0)
+            else:
+                grocery_in = None
+                for col in ['grocery_stores_in_tract', 'grocery stores in tract', 'grocery_in_tract']:
+                    if col in df.columns:
+                        grocery_in = col
+                        break
+                if grocery_in is not None:
+                    grocery_score = self._normalize_score_with_density(df[grocery_in], use_density=True)
+                    scores += grocery_score * access_weights.get('grocery_weight', 0)
+
+            # Co-location with gas stations (prefer 5mi buffer; fallback to in-tract)
+            gas_within = None
+            for col in [
+                'gas_stations_within_5mi',
+                'gas_station_within_5mi',
+                'gas stations within_5mi',
+                'gas_stations within_5mi'
+            ]:
+                if col in df.columns:
+                    gas_within = col
+                    break
+            if gas_within is not None:
+                gas_score = self._normalize_score(df[gas_within])
+                scores += gas_score * access_weights.get('gas_station_weight', 0)
+            else:
+                gas_in = None
+                for col in ['gas_stations_in_tract', 'gas stations in tract', 'gas_station_in_tract']:
+                    if col in df.columns:
+                        gas_in = col
+                        break
+                if gas_in is not None:
+                    gas_score = self._normalize_score_with_density(df[gas_in], use_density=True)
+                    scores += gas_score * access_weights.get('gas_station_weight', 0)
+
+        accessibility_score = np.clip(scores, 0, 100)
+        return accessibility_score
+    
     def _calculate_grid_infrastructure_score(self, df):
         """
         Enhanced grid infrastructure scoring combining multiple data sources.
@@ -522,271 +669,71 @@ class TruckChargingSiteSelector:
         return grid_scores.clip(0, 100)
 
     def calculate_equity_feasibility_score(self):
-        """
-        Calculate equity & feasibility score (15% of total).
-        Balances EJ access with land use feasibility and sensitive site avoidance.
-        
-        NOTE: EJ benefits are weighted differently based on charging type:
-        - Public/corridor charging: EJ proximity is BENEFICIAL (community access)
-        - Fleet hubs: EJ proximity is NEUTRAL (no public access)
-        """
-        df = self.gdf.copy()
-        scores = pd.Series(50, index=df.index)
-        
-        equity_weights = self.config.get('equity_weights', {
-            'ej_priority_weight': 0.4,      # Variable by charging type
-            'landuse_suit_weight': 0.35,
-            'tier_bonus_weight': 0.15,
-            'protected_penalty_weight': 0.1
-        })
-
-        # Allow users to disable this entire section by setting ALL component weights to 0
-        try:
-            equity_total = float(sum([float(v or 0) for v in equity_weights.values()]))
-        except Exception:
-            equity_total = 1.0
-        if equity_total == 0:
-            print("   Equity component weights set to 0 → equity & feasibility score disabled")
-            return pd.Series(0, index=df.index)
-
-        equity_weights = self._normalize_weight_dict(equity_weights)
-
-        # Component 1: Environmental Justice access (TYPE-DEPENDENT)
-        # Check if we have charging type classification already
-        has_charging_type = 'charging_type' in df.columns
-        
-        if 'ej_priority_score' in df.columns:
-            ej_base_score = (df['ej_priority_score'] / 100) * 30
-            
-            if has_charging_type:
-                # Apply EJ score based on charging type
-                # Depot/Fleet hubs: Set EJ benefit to 0 (no community access)
-                # Corridor/Opportunistic/Mixed: Keep EJ benefit (community access)
-                is_depot = df['charging_type'] == 'depot_overnight'
-                
-                # Zero out EJ bonus for depot sites, keep for others
-                ej_adjusted = ej_base_score.copy()
-                ej_adjusted[is_depot] = 0
-                
-                scores += ej_adjusted * equity_weights['ej_priority_weight']
-                
-                print(f"   EJ scoring (charging-type adjusted):")
-                print(f"     Depot sites (EJ=0): {is_depot.sum()}")
-                print(f"     Public/corridor sites (EJ weighted): {(~is_depot).sum()}")
-            else:
-                # Fallback: use EJ for all sites (before charging type classification)
-                scores += ej_base_score * equity_weights['ej_priority_weight']
-                print(f"   EJ scoring (uniform - charging types not yet classified)")
-
-        # Component 2: Land use feasibility (unchanged)
-        if 'truck_suitability_final' in df.columns:
-            landuse_score = (df['truck_suitability_final'] / 100) * 40
-            scores += landuse_score * equity_weights['landuse_suit_weight']
-        elif 'truck_charging_suitability' in df.columns:
-            landuse_score = (df['truck_charging_suitability'] / 100) * 40
-            scores += landuse_score * equity_weights['landuse_suit_weight']
-
-        # Component 3: Feasibility tier bonus (unchanged)
-        if 'truck_feasibility_tier' in df.columns:
-            tier_bonus = df['truck_feasibility_tier'] * 5
-            scores += tier_bonus * equity_weights['tier_bonus_weight']
-        elif 'has_commercial_industrial' in df.columns:
-            commercial_bonus = df['has_commercial_industrial'] * 20
-            scores += commercial_bonus * equity_weights['tier_bonus_weight']
-
-        # Component 4: Protected land penalty (unchanged)
-        if 'protected_penalty' in df.columns:
-            scores += df['protected_penalty'] * equity_weights['protected_penalty_weight']
-        elif 'mostly_protected' in df.columns:
-            protected_penalty = df['mostly_protected'] * 50
-            scores -= protected_penalty * equity_weights['protected_penalty_weight']
-
-        # Additional penalties for sensitive POIs (unchanged)
-        if 'schools_within_5mi' in df.columns:
-            school_density = df['schools_within_5mi']
-            school_penalty = np.where(school_density > 5, 20,
-                                      np.where(school_density > 2, 10, 0))
-            scores -= school_penalty * 0.05
-
-        if 'hospitals_within_5mi' in df.columns:
-            hospital_density = df['hospitals_within_5mi']
-            hospital_penalty = np.where(hospital_density > 3, 15, 0)
-            scores -= hospital_penalty * 0.05
-
-        equity_feasibility_score = np.clip(scores, 0, 100)
-        return equity_feasibility_score
-
-    def calculate_accessibility_score(self):
-        """
-        Calculate accessibility score (20% of total).
+        """Calculate Equity & Environmental score.
+    
+        Per current dashboard design, this score ONLY uses:
+          - EJ Priority Access (benefit)
+          - Land Use Suitability / Truck suitability (benefit)
+          - Commercial/Industrial land use share (benefit)
+          - Protected land penalty (penalty)
+    
+        Any additional equity/feasibility adjustments (e.g., charging-type-aware EJ scaling,
+        sensitive POI penalties, tier bonuses) are intentionally excluded.
         """
         df = self.gdf.copy()
         scores = pd.Series(0, index=df.index)
-        
-        secondary_corridor_mode = self.config.get('secondary_corridor_mode', False)
-        
-        if secondary_corridor_mode:
-            print("   Accessibility scoring mode: SECONDARY CORRIDORS ONLY")
-            
-            if 'secondary_corridor_only_score' in df.columns:
-                corridor_score = df['secondary_corridor_only_score'].fillna(0)
-                scores += corridor_score
-                print(f"     Tracts with secondary corridor access: {(corridor_score > 0).sum()}")
-            
-        else:
-            print("   Accessibility scoring mode: ALL ROAD TYPES")
-            
-            access_weights = self.config.get('accessibility_weights', {
-                'network_weight': 0.50,
-                'grocery_weight': 0.25,
-                'gas_station_weight': 0.25
-            })
-
-            # Allow users to disable this entire section by setting ALL component weights to 0
-            try:
-                access_total = float(sum([float(v or 0) for v in access_weights.values()]))
-            except Exception:
-                access_total = 1.0
-            if access_total == 0:
-                print("   Accessibility component weights set to 0 → accessibility score disabled")
-                return pd.Series(0, index=df.index)
-
-            access_weights = self._normalize_weight_dict(access_weights)
-
-            # Network density (D3AAO is already a density metric: mi/sq mi) - no conversion
-            if 'D3AAO' in df.columns:
-                network_score = self._normalize_score(df['D3AAO'])
-                scores += network_score * access_weights.get('network_weight', 0)
-
-            # Co-location with grocery stores (prefer 5mi buffer; fallback to in-tract)
-            grocery_within = None
-            for col in ['grocery_stores_within_5mi', 'grocery_within_5mi', 'grocery stores within_5mi', 'grocery_stores within_5mi']:
-                if col in df.columns:
-                    grocery_within = col
-                    break
-            if grocery_within is not None:
-                grocery_score = self._normalize_score(df[grocery_within])
-                scores += grocery_score * access_weights.get('grocery_weight', 0)
-            else:
-                grocery_in = None
-                for col in ['grocery_stores_in_tract', 'grocery stores in tract', 'grocery_in_tract']:
-                    if col in df.columns:
-                        grocery_in = col
-                        break
-                if grocery_in is not None:
-                    grocery_score = self._normalize_score_with_density(df[grocery_in], use_density=True)
-                    scores += grocery_score * access_weights.get('grocery_weight', 0)
-
-            # Co-location with gas stations (prefer 5mi buffer; fallback to in-tract)
-            gas_within = None
-            for col in ['gas_stations_within_5mi', 'gas_station_within_5mi', 'gas stations within_5mi', 'gas_stations within_5mi']:
-                if col in df.columns:
-                    gas_within = col
-                    break
-            if gas_within is not None:
-                gas_score = self._normalize_score(df[gas_within])
-                scores += gas_score * access_weights.get('gas_station_weight', 0)
-            else:
-                gas_in = None
-                for col in ['gas_stations_in_tract', 'gas stations in tract', 'gas_station_in_tract']:
-                    if col in df.columns:
-                        gas_in = col
-                        break
-                if gas_in is not None:
-                    gas_score = self._normalize_score_with_density(df[gas_in], use_density=True)
-                    scores += gas_score * access_weights.get('gas_station_weight', 0)
-        
-        accessibility_score = np.clip(scores, 0, 100)
-        return accessibility_score
-
-    def apply_hard_constraints(self):
-        """
-        Apply hard constraints to filter out infeasible tracts.
-        Returns boolean mask of feasible tracts.
-        """
-        df = self.gdf.copy()
-        feasible = pd.Series(True, index=df.index)
-        constraints = self.config['constraints']
-
-        # Constraint 1: Minimum person trips/day
-
-        person_trips = pd.Series(0, index=df.index)
-        if 'equity_0_trips' in df.columns:
-            person_trips += df['equity_0_trips'].fillna(0)
-        if 'equity_1_trips' in df.columns:
-            person_trips += df['equity_1_trips'].fillna(0)
-
-        if person_trips.max() > 0:
-            min_threshold = constraints.get('min_person_trips', 10)
-            feasible &= person_trips >= float(min_threshold)
-            print(f"  Person trips/day threshold: {float(min_threshold):.0f}")
-
-        # NEW (optional): Only include tracts within 0.5-mi secondary network buffer
-        if constraints.get('only_within_secondary_buffer', False):
-            if 'touched_0.5mi_secondary_buffer' in df.columns:
-                within = df['touched_0.5mi_secondary_buffer'].fillna(0)
-                feasible &= within.astype(float) > 0
-                print(f"  Secondary-buffer constraint: keeping {int((within.astype(float) > 0).sum())} tracts within 0.5 mi buffer")
-            else:
-                print("  Secondary-buffer constraint enabled, but touched_0.5mi_secondary_buffer column not found")
-
-        
-        # NEW (optional): Only include rural tracts
-        if constraints.get('only_rural', False):
-            if 'rural_flag' in df.columns:
-                rural = df['rural_flag'].fillna(0)
-                feasible &= rural.astype(float) > 0
-                print(f"  Rural-only constraint: keeping {int((rural.astype(float) > 0).sum())} rural tracts")
-            else:
-                print("  Rural-only constraint enabled, but rural_flag column not found")
-
-# Constraint 2: Land use feasibility (SIGNIFICANTLY RELAXED) (SIGNIFICANTLY RELAXED)
-        # CHANGE: Accept tier 0 tracts if they have ANY commercial/industrial
-        if 'truck_feasibility_tier' in df.columns:
-            has_some_suitability = (
-                (df['truck_feasibility_tier'] >= 1) |  # Original tiers
-                (df.get('landuse_pct_commercial', 0) > 1) |  # Or 1%+ commercial
-                (df.get('landuse_pct_industrial', 0) > 1) |  # Or 1%+ industrial
-                (df.get('truck_suitability_final', 0) >= 20)  # Or basic suitability
-            )
-            feasible &= has_some_suitability
-            print(f"  Land use constraint: {has_some_suitability.sum()} tracts have some suitability")
-        elif 'truck_suitability_final' in df.columns:
-            feasible &= df['truck_suitability_final'] >= 15  # Keep this relaxed
-        elif 'has_commercial_industrial' in df.columns:
-            feasible &= df['has_commercial_industrial'] == 1
-
-        # Constraint 3: Not heavily protected (KEEP)
-        if 'landuse_pct_protected_natural' in df.columns:
-            feasible &= df['landuse_pct_protected_natural'] < 80
-        elif 'mostly_protected' in df.columns:
-            feasible &= df['mostly_protected'] == 0
-
-        # NEW (optional): Exclude tracts with 0 feeder headroom (grid constraint)
-        if constraints.get('exclude_zero_headroom', False):
-            if 'median_feeder_headroom_mva' in df.columns:
-                headroom = df['median_feeder_headroom_mva'].fillna(0)
-                feasible &= headroom > 0
-                print(f"  Grid headroom constraint: excluding {(headroom <= 0).sum()} tracts with 0 headroom")
-            else:
-                print("  Grid headroom constraint enabled, but median_feeder_headroom_mva column not found")
-
-        # Constraint 4: Not over-saturated (RELAXED)
-        # CHANGE: Increase threshold - more existing chargers might indicate demand
-        if 'ev_charging_stations_within_5mi' in df.columns:
-            # feasible &= df['ev_charging_stations_within_5mi'] < 50  # Was 20  # DISABLED per client request
-            pass
-        # Constraint 5: Charging type (KEEP but make optional)
-        if 'charging_type' in df.columns:
-            has_charging_type = df['charging_type'] != 'none'
-            print(f"  Charging type constraint: {has_charging_type.sum()} tracts have identifiable charging type")
-            # Make this informational only, not a hard filter
-            # feasible &= has_charging_type  # COMMENTED OUT
-
-        print(f"\n  Feasibility check: {feasible.sum()} of {len(feasible)} tracts pass constraints ({feasible.sum()/len(feasible)*100:.1f}%)")
-        
-        return feasible
-        
+    
+        _equity_defaults = {
+            'ej_priority_weight': 0.40,
+            'landuse_suit_weight': 0.35,
+            'commercial_industrial_weight': 0.15,
+            'protected_penalty_weight': 0.10,
+        }
+        equity_weights = {**_equity_defaults, **(self.config.get('equity_weights') or {})}
+    
+        # Allow users to disable this entire section
+        try:
+            eq_total = float(sum([float(v or 0) for v in equity_weights.values()]))
+        except Exception:
+            eq_total = 1.0
+        if eq_total == 0:
+            print("   Equity weights set to 0 → equity score disabled")
+            return pd.Series(0, index=df.index)
+    
+        equity_weights = self._normalize_weight_dict(equity_weights)
+    
+        # Benefit 1: EJ priority access
+        if 'ej_priority_score' in df.columns:
+            ej_score = self._normalize_score(df['ej_priority_score'])
+            scores += ej_score * equity_weights.get('ej_priority_weight', 0)
+    
+        # Benefit 2: Land use / truck suitability
+        if 'truck_suitability_final' in df.columns:
+            landuse_suit = self._normalize_score(df['truck_suitability_final'])
+            scores += landuse_suit * equity_weights.get('landuse_suit_weight', 0)
+    
+        # Benefit 3: Commercial + Industrial land use share
+        comm = pd.to_numeric(df.get('landuse_pct_commercial', 0), errors='coerce').fillna(0)
+        ind  = pd.to_numeric(df.get('landuse_pct_industrial', 0), errors='coerce').fillna(0)
+        comm_ind = (comm + ind).clip(0, 100)
+        comm_ind_score = self._normalize_score(comm_ind)
+        scores += comm_ind_score * equity_weights.get('commercial_industrial_weight', 0)
+    
+        # Penalty: Protected land share (higher protected = larger penalty)
+        protected_col = None
+        for col in ['landuse_pct_protected_natural', 'protected_land_pct', 'pct_protected_land']:
+            if col in df.columns:
+                protected_col = col
+                break
+        if protected_col is not None:
+            protected = pd.to_numeric(df[protected_col], errors='coerce').fillna(0).clip(0, 100)
+            protected_score = self._normalize_score(protected)
+            scores -= protected_score * equity_weights.get('protected_penalty_weight', 0)
+    
+        # Clip to 0-100
+        equity_score = np.clip(scores, 0, 100)
+        return equity_score
+    
     def apply_secondary_corridor_filter(self):
         """
         Filter to only secondary corridor tracts.
@@ -884,6 +831,21 @@ class TruckChargingSiteSelector:
             
             # Urban/rural context
             'urban_rural_context': urban_rural,
+            # Explicit rural flag passthrough (needed for UI toggle + rankings table)
+            # Prefer rural_flag when present; otherwise derive from common alternatives.
+            'rural_flag': (
+                self.gdf.get(
+                    'rural_flag',
+                    self.gdf.get(
+                        'is_rural',
+                        self.gdf.get(
+                            'rural',
+                            self.gdf.get('urban_rural_context', '').astype(str).str.strip().str.lower().eq('rural').astype(int)
+                            if 'urban_rural_context' in self.gdf.columns else 0
+                        )
+                    )
+                )
+            ),
             'urban_context_bonus': self.gdf.get('urban_context_bonus', 0),
             'rural_context_bonus': self.gdf.get('rural_context_bonus', 0),
             'mixed_use_bonus': self.gdf.get('mixed_use_bonus', 0),
@@ -1123,13 +1085,16 @@ class TruckChargingSiteSelector:
             ld_share = pd.Series(0.0, index=df.index)
         else:
             ld_share = pd.to_numeric(df[ld_col], errors='coerce').fillna(0)
-            charging_type = np.where(ld_share > 5, 'long_distance', 'other')
+            # Detect units: some datasets store share as 0-1, others as 0-100
+            ld_max = float(ld_share.max()) if len(ld_share) else 0.0
+            threshold = 0.05 if ld_max <= 1.0 else 5.0
+            charging_type = np.where(ld_share > threshold, 'long_distance', 'other')
             charging_type = pd.Series(charging_type, index=df.index)
 
         self.gdf['charging_type'] = charging_type
         self.gdf['pct_long_distance_trips'] = ld_share
 
-        print(f"  Long-distance share threshold: > 5% → 'long_distance'")
+        print(f"  Long-distance share threshold: > 5% (or >0.05 if stored as 0–1) → 'long_distance'")
         print(f"   - Long-distance: {(charging_type == 'long_distance').sum():4d} tracts")
         print(f"   - Other:         {(charging_type == 'other').sum():4d} tracts")
         print("=" * 60 + "\n")

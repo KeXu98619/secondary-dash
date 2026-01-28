@@ -15,7 +15,7 @@ def create_navbar() -> dbc.Navbar:
                 dbc.Col([
                     html.I(className="fas fa-charging-station fa-2x text-white me-3"),
                     html.Div([
-                        html.H3("Massachusetts Truck Charging Site Selector",
+                        html.H3("Massachusetts Secondary Network Charging Site Selector",
                                 className="mb-0 text-white"),
                         html.Small(
                             "Infrastructure Planning & Analysis Tool",
@@ -249,8 +249,8 @@ def create_demand_subweights_section() -> html.Div:
                 html.Hr(className="my-2"),
 
                 html.P("Temporal Pattern Weights:", className="small fw-bold text-warning mb-2"),
-                html.Small("How demand varies throughout the day (must sum to 100 - or set to 0 to not be considered)",
-                          className="text-muted d-block mb-2"),
+                # html.Small("How demand varies throughout the day (must sum to 100 - or set to 0 to not be considered)",
+                #           className="text-muted d-block mb-2"),
 
                 create_subweight_input('temporal-stability', 'Demand Stability', 60),
                 html.Small("Weight for stable/uniform demand",
@@ -431,7 +431,7 @@ def create_layout():
                     dbc.Container([
                         dbc.Row([
                             dbc.Col([
-                                html.H2("Welcome to the Massachusetts Truck Charging Site Selector",
+                                html.H2("Welcome to the MA Secondary Network Charging Site Selector",
                                         className="mb-4 mt-4"),
                                 html.Hr(),
 
@@ -439,9 +439,9 @@ def create_layout():
                                 html.H4([html.I(className="fas fa-info-circle me-2"),
                                          "What This Decision Support Tool Does"], className="mt-4 mb-3"),
                                 html.P([
-                                    "This decision support tool helps identify optimal locations for electric truck ",
+                                    "This decision support tool helps identify optimal locations for light-duty electric passenger vehicles ",
                                     "charging infrastructure across Massachusetts using multi-criteria analysis. ",
-                                    "It evaluates census tracts based on truck activity demand, electrical infrastructure ",
+                                    "It evaluates census tracts based on activity demand, electrical infrastructure ",
                                     "capacity, transportation accessibility, and equity considerations."
                                 ], className="lead"),
 
@@ -485,7 +485,8 @@ def create_layout():
                                                 html.I(className="fas fa-cogs fa-2x text-warning mb-3"),
                                                 html.H5("Constraint Filtering", className="card-title"),
                                                 html.P("Apply feasibility constraints based on tract-level limits "
-                                                       "(e.g., max facility densities)", className="small")
+                                                    #    "(e.g., max facility densities)"
+                                                       , className="small")
                                             ])
                                         ], className="text-center h-100 shadow-sm")
                                     ], md=3)
@@ -498,12 +499,12 @@ def create_layout():
                                     dbc.ListGroupItem([
                                         html.I(className="fas fa-truck me-2 text-primary"),
                                         html.Strong("LOCUS: "),
-                                        "Truck trip ends, domiciled vehicles, duty cycle data by vehicle class, vocation, and time of day"
+                                        "Person trip ends by purpose, weekday/weekend, equity community and time of day"
                                     ]),
                                     dbc.ListGroupItem([
                                         html.I(className="fas fa-bolt me-2 text-warning"),
                                         html.Strong("National Grid Massachusetts System Data Portal: "),
-                                        "Substation locations, 3-phase feeder network, renewable capacity, and 2027 load forecasts"
+                                        "3-phase feeder network"
                                     ]),
                                     dbc.ListGroupItem([
                                         html.I(className="fas fa-map me-2 text-success"),
@@ -518,12 +519,12 @@ def create_layout():
                                     dbc.ListGroupItem([
                                         html.I(className="fas fa-road me-2 text-danger"),
                                         html.Strong("MassDOT Traffic Volume and Classification: "),
-                                        "AADT data, truck percentages, and National Highway System routes"
+                                        "AADT data"
                                     ]),
                                     dbc.ListGroupItem([
                                         html.I(className="fas fa-location-dot me-2 text-secondary"),
                                         html.Strong("OpenStreetMap: "),
-                                        "POI locations (schools, hospitals, places of worship, warehouses, gas stations, parks)"
+                                        "POI locations (gas stations, grocery stores, government spaces)"
                                     ]),
                                     dbc.ListGroupItem([
                                         html.I(className="fas fa-chart-area me-2 text-primary"),
@@ -538,13 +539,13 @@ def create_layout():
                                     dbc.ListGroupItem([
                                         html.I(className="fas fa-train me-2 text-warning"),
                                         html.Strong("MassDOT: "),
-                                        "Co-location with transit & transit parking lots, intermodal rail facilities (TOFC/COFC)"
+                                        "Co-location with transit & transit parking lots"
                                     ]),
-                                    dbc.ListGroupItem([
-                                        html.I(className="fas fa-clock me-2 text-primary"),
-                                        html.Strong("Stop Duration/Air Quality Improvement Potential Analysis: "),
-                                        "Post-trip stop duration, translating to air quality improvement potential from LOCUS data - only trips with stops ≥ 30 minutes qualify as charging opportunities"
-                                    ])
+                                    # dbc.ListGroupItem([
+                                    #     html.I(className="fas fa-clock me-2 text-primary"),
+                                    #     html.Strong("Stop Duration/Air Quality Improvement Potential Analysis: "),
+                                    #     "Post-trip stop duration, translating to air quality improvement potential from LOCUS data - only trips with stops ≥ 30 minutes qualify as charging opportunities"
+                                    # ])
                                 ], className="mb-4"),
 
                                 # User manual
@@ -564,8 +565,7 @@ def create_layout():
                                             ], className="mb-2"),
                                             html.Li([
                                                 html.Strong("Set Constraints: "),
-                                                "Define minimum truck activity thresholds and maximum facility density "
-                                                "limits (schools, hospitals, places of worship per sq mi)"
+                                                "Define minimum trip activity thresholds and toggle on if secondary network nearby, rural flag and median feeder headroom constraints"
                                             ], className="mb-2"),
                                             html.Li([
                                                 html.Strong("Run Analysis: "),
@@ -655,6 +655,16 @@ def create_layout():
                                                 step=1,
                                                 units='sites'
                                             ),
+                                            html.Hr(className="my-3"),
+                                            html.Label("Minimum Distance Between Sites",
+                                                       className="fw-bold small mb-1"),
+                                            dcc.Slider(
+                                                id='min-distance-slider',
+                                                # Allow users to set 0 mi (no separation) and fine-tune with 2-mi steps
+                                                min=0, max=50, step=2, value=10,
+                                                marks={i: f'{i}mi' for i in range(0, 51, 10)},
+                                                tooltip={"placement": "bottom"}
+                                            ),
                                         ],
                                         icon="fas fa-map-marker-alt"
                                     ),
@@ -703,7 +713,7 @@ def create_layout():
                                                 dbc.Checklist(
                                                     id='exclude-zero-headroom-toggle',
                                                     options=[{
-                                                        'label': 'Exclude tracts with 0 feeder headroom',
+                                                        'label': 'Only include tracts with >0 feeder headroom',
                                                         'value': 'exclude'
                                                     }],
                                                     value=[],
@@ -728,14 +738,14 @@ def create_layout():
                                                     html.Span("🛣️", className="me-2"),
                                                     html.Strong("Long-distance", className="small text-success")
                                                 ], className="mb-1"),
-                                                html.P(">5% long-distance trip ends", 
+                                                html.P("Areas with a higher concentration of long-distance (>50 mi) trip ends", 
                                                        className="small text-muted mb-2", style={"marginLeft": "30px"}),
 
                                                 html.Div([
                                                     html.Span("🏙️", className="me-2"),
                                                     html.Strong("Other", className="small text-secondary")
                                                 ], className="mb-1"),
-                                                html.P("≤5% long-distance trip ends", 
+                                                html.P("Areas with fewer long-distance (>50 mi) trip ends", 
                                                        className="small text-muted mb-0", style={"marginLeft": "30px"})
                                             ])
                                         ], className="p-2")
@@ -891,724 +901,6 @@ def create_layout():
                                             ])
                                         ], label="Analytics", tab_id="tab-analytics"),
                                         
-                                        # Tab 5: Temporal Analysis
-                                        dbc.Tab([
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H5("Temporal Demand Overview", className="mb-3"),
-                                                            html.P([
-                                                                "This analysis examines how truck trip demand varies throughout the day. ",
-                                                                "Stable demand patterns are ideal for depot/overnight charging, while ",
-                                                                "peaky demand indicates need for fast charging infrastructure."
-                                                            ], className="small text-muted mb-3"),
-                                                            
-                                                            dbc.Row([
-                                                                dbc.Col([
-                                                                    html.Div([
-                                                                        html.I(className="fas fa-equals fa-2x text-info mb-2"),
-                                                                        html.H3("--", id="avg-demand-uniformity", className="mb-0 mt-2"),
-                                                                        html.P("Avg Uniformity", className="text-muted mb-0 small")
-                                                                    ], className="text-center")
-                                                                ], md=4),
-                                                                dbc.Col([
-                                                                    html.Div([
-                                                                        html.I(className="fas fa-chart-line fa-2x text-warning mb-2"),
-                                                                        html.H3("--", id="avg-peak-intensity", className="mb-0 mt-2"),
-                                                                        html.P("Avg Peak Ratio", className="text-muted mb-0 small")
-                                                                    ], className="text-center")
-                                                                ], md=4),
-                                                                dbc.Col([
-                                                                    html.Div([
-                                                                        html.I(className="fas fa-moon fa-2x text-success mb-2"),
-                                                                        html.H3("--", id="stable-sites-count", className="mb-0 mt-2"),
-                                                                        html.P("Stable Sites", className="text-muted mb-0 small")
-                                                                    ], className="text-center")
-                                                                ], md=4)
-                                                        
-                                                            ], className="mb-4")
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ])
-                                            ]),
-                                            
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Temporal Pattern Classification", className="mb-3"),
-                                                            dcc.Graph(id='temporal-pattern-scatter')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ], md=12)
-                                            ]),
-                                            
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Time-of-Day Distribution (Selected Sites)", className="mb-3"),
-                                                            dcc.Graph(id='temporal-tod-heatmap')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ], md=12)
-                                            ]),
-                                            
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Charging Type Recommendations", className="mb-3"),
-                                                            html.Div(id='recommended-charging-breakdown')
-                                                        ])
-                                                    ], className="shadow-sm border-0")
-                                                ], md=12)
-                                            ])
-                                        ], label="Temporal Patterns", tab_id="tab-temporal"),
-                                        
-                                        
-                                        # dbc.Row([
-                                            # dbc.Col([
-                                                # dbc.Card([
-                                                    # dbc.CardBody([
-                                                        # html.H6("Path-Based vs Segment-Based AADT Comparison", className="mb-3"),
-                                                        # html.P([
-                                                            # "This chart shows the difference between naive segment-based counting ",
-                                                            # "(which double-counts vehicles) and our path-based approach (unique vehicles)."
-                                                        # ], className="small text-muted mb-3"),
-                                                        # dcc.Graph(id='aadt-methodology-comparison')
-                                                    # ])
-                                                # ], className="shadow-sm border-0 mb-3")
-                                            # ])
-                                        # ]),
-                                        
-                                        
-                                        # Tab 6: Charging Type Classification
-                                        dbc.Tab([
-                                            # Summary cards at top
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-warehouse fa-2x text-primary mb-2"),
-                                                                html.H3("--", id="charging-type-depot-count", className="mb-0 mt-2"),
-                                                                html.P("Long-distance share >5%", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-bolt fa-2x text-warning mb-2"),
-                                                                html.H3("--", id="charging-type-opportunistic-count", className="mb-0 mt-2"),
-                                                                html.P("Other (≤5%)", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-road fa-2x text-success mb-2"),
-                                                                html.H3("--", id="charging-type-corridor-count", className="mb-0 mt-2"),
-                                                                html.P("—", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-shuffle fa-2x text-info mb-2"),
-                                                                html.H3("--", id="charging-type-mixed-count", className="mb-0 mt-2"),
-                                                                html.P("—", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3)
-                                            ], className="mb-3"),
-                                            
-                                            
-                                            # Tab 7: Urban/Rural Context
-                                            dbc.Tab([
-                                                # Summary cards at top
-                                                dbc.Row([
-                                                    dbc.Col([
-                                                        dbc.Card([
-                                                            dbc.CardBody([
-                                                                html.Div([
-                                                                    html.I(className="fas fa-city fa-2x text-danger mb-2"),
-                                                                    html.H3("--", id="urban-context-count", className="mb-0 mt-2"),
-                                                                    html.P("Urban Sites", className="text-muted mb-0 small")
-                                                                ], className="text-center")
-                                                            ])
-                                                        ], className="shadow-sm border-0 h-100")
-                                                    ], md=4),
-                                                    dbc.Col([
-                                                        dbc.Card([
-                                                            dbc.CardBody([
-                                                                html.Div([
-                                                                    html.I(className="fas fa-tree fa-2x text-success mb-2"),
-                                                                    html.H3("--", id="rural-context-count", className="mb-0 mt-2"),
-                                                                    html.P("Rural Sites", className="text-muted mb-0 small")
-                                                                ], className="text-center")
-                                                            ])
-                                                        ], className="shadow-sm border-0 h-100")
-                                                    ], md=4),
-                                                    dbc.Col([
-                                                        dbc.Card([
-                                                            dbc.CardBody([
-                                                                html.Div([
-                                                                    html.I(className="fas fa-layer-group fa-2x text-warning mb-2"),
-                                                                    html.H3("--", id="mixed-context-count", className="mb-0 mt-2"),
-                                                                    html.P("Mixed Context", className="text-muted mb-0 small")
-                                                                ], className="text-center")
-                                                            ])
-                                                        ], className="shadow-sm border-0 h-100")
-                                                    ], md=4)
-                                                ], className="mb-3"),
-                                                
-                                                # Info card explaining urban/rural context
-                                                dbc.Row([
-                                                    dbc.Col([
-                                                        dbc.Card([
-                                                            dbc.CardBody([
-                                                                html.H5("Urban vs Rural Context", className="mb-3"),
-                                                                html.P([
-                                                                    "Sites are classified based on land use patterns and development density. ",
-                                                                    "This affects infrastructure requirements, charging patterns, and site suitability."
-                                                                ], className="small text-muted mb-3"),
-                                                                
-                                                                dbc.Row([
-                                                                    dbc.Col([
-                                                                        html.Div([
-                                                                            html.I(className="fas fa-city fa-2x text-danger mb-2"),
-                                                                            html.H6("Urban", className="mb-2"),
-                                                                            html.Ul([
-                                                                                html.Li("High density development", className="small"),
-                                                                                html.Li("Mixed commercial/residential", className="small"),
-                                                                                html.Li("Last-mile delivery focus", className="small"),
-                                                                                html.Li("More opportunistic charging", className="small")
-                                                                            ])
-                                                                        ])
-                                                                    ], md=4),
-                                                                    
-                                                                    dbc.Col([
-                                                                        html.Div([
-                                                                            html.I(className="fas fa-tree fa-2x text-success mb-2"),
-                                                                            html.H6("Rural", className="mb-2"),
-                                                                            html.Ul([
-                                                                                html.Li("Low density, dispersed", className="small"),
-                                                                                html.Li("Agricultural/industrial", className="small"),
-                                                                                html.Li("Long-haul corridor focus", className="small"),
-                                                                                html.Li("More depot/en-route charging", className="small")
-                                                                            ])
-                                                                        ])
-                                                                    ], md=4),
-                                                                    
-                                                                    dbc.Col([
-                                                                        html.Div([
-                                                                            html.I(className="fas fa-layer-group fa-2x text-warning mb-2"),
-                                                                            html.H6("Mixed", className="mb-2"),
-                                                                            html.Ul([
-                                                                                html.Li("Suburban/peri-urban", className="small"),
-                                                                                html.Li("Diverse land use", className="small"),
-                                                                                html.Li("Transition zones", className="small"),
-                                                                                html.Li("Multiple charging needs", className="small")
-                                                                            ])
-                                                                        ])
-                                                                    ], md=4)
-                                                                ])
-                                                            ])
-                                                        ], className="shadow-sm border-0 mb-3")
-                                                    ])
-                                                ]),
-                                                
-                                                # Map and breakdown
-                                                dbc.Row([
-                                                    dbc.Col([
-                                                        dbc.Card([
-                                                            dbc.CardBody([
-                                                                html.H6("Filter by Context", className="mb-3"),
-                                                                dcc.Dropdown(
-                                                                    id='urban-rural-filter',
-                                                                    options=[
-                                                                        {'label': '🔍 All Contexts', 'value': 'all'},
-                                                                        {'label': '🏙️ Urban Only', 'value': 'urban'},
-                                                                        {'label': '🌳 Rural Only', 'value': 'rural'},
-                                                                        {'label': '🏘️ Mixed Only', 'value': 'mixed'}
-                                                                    ],
-                                                                    value='all',
-                                                                    clearable=False,
-                                                                    className="mb-3"
-                                                                ),
-                                                                dcc.Graph(id='urban-rural-map')
-                                                            ])
-                                                        ], className="shadow-sm border-0 mb-3")
-                                                    ], md=8),
-                                                    
-                                                    dbc.Col([
-                                                        dbc.Card([
-                                                            dbc.CardBody([
-                                                                html.H6("Context Distribution", className="mb-3"),
-                                                                dcc.Graph(id='urban-rural-breakdown-chart')
-                                                            ])
-                                                        ], className="shadow-sm border-0 mb-3")
-                                                    ], md=4)
-                                                ]),
-                                                
-                                                # Cross-analysis with charging types
-                                                dbc.Row([
-                                                    dbc.Col([
-                                                        dbc.Card([
-                                                            dbc.CardBody([
-                                                                html.H6("Charging Types by Urban/Rural Context", className="mb-3"),
-                                                                html.P([
-                                                                    "This shows how charging facility types correlate with urban/rural settings. ",
-                                                                    "Urban areas tend toward opportunistic charging, while rural areas favor depot and corridor charging."
-                                                                ], className="small text-muted mb-3"),
-                                                                dcc.Graph(id='context-by-charging-type-chart')
-                                                            ])
-                                                        ], className="shadow-sm border-0")
-                                                    ])
-                                                ])
-                                            ], label="Urban/Rural Context", tab_id="tab-urban-rural"),
-                                            
-                                            # Charging type info card
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H5("Understanding Charging Types", className="mb-3"),
-                                                            html.P([
-                                                                "Sites are classified into three main charging facility types based on ",
-                                                                "demand patterns, with different infrastructure requirements for each:"
-                                                            ], className="small text-muted mb-3"),
-                                                            
-                                                            dbc.Row([
-                                                                dbc.Col([
-                                                                    dbc.Card([
-                                                                        dbc.CardBody([
-                                                                            html.Div([
-                                                                                html.I(className="fas fa-warehouse fa-2x text-primary mb-2"),
-                                                                                html.H6("Depot/Overnight", className="mb-2"),
-                                                                                html.Hr(className="my-2"),
-                                                                                html.Ul([
-                                                                                    html.Li("High domiciled truck concentration", className="small"),
-                                                                                    html.Li("Evening/overnight activity", className="small"),
-                                                                                    html.Li("8+ hour dwell times", className="small")
-                                                                                ], className="mb-2"),
-                                                                                html.Strong("Infrastructure:", className="small text-muted d-block"),
-                                                                                html.P("Level 2 AC chargers (7-19 kW)", className="small mb-0")
-                                                                            ])
-                                                                        ], className="p-2")
-                                                                    ], className="h-100 border-primary border-2")
-                                                                ], md=4),
-                                                                
-                                                                dbc.Col([
-                                                                    dbc.Card([
-                                                                        dbc.CardBody([
-                                                                            html.Div([
-                                                                                html.I(className="fas fa-bolt fa-2x text-warning mb-2"),
-                                                                                html.H6("Opportunistic/Top-Up", className="mb-2"),
-                                                                                html.Hr(className="my-2"),
-                                                                                html.Ul([
-                                                                                    html.Li("Frequent daytime stops", className="small"),
-                                                                                    html.Li("30-120 min stop duration", className="small"),
-                                                                                    html.Li("Delivery/local operations", className="small")
-                                                                                ], className="mb-2"),
-                                                                                html.Strong("Infrastructure:", className="small text-muted d-block"),
-                                                                                html.P("DC Fast chargers (50-150 kW)", className="small mb-0")
-                                                                            ])
-                                                                        ], className="p-2")
-                                                                    ], className="h-100 border-warning border-2")
-                                                                ], md=4),
-                                                                
-                                                                dbc.Col([
-                                                                    dbc.Card([
-                                                                        dbc.CardBody([
-                                                                            html.Div([
-                                                                                html.I(className="fas fa-road fa-2x text-success mb-2"),
-                                                                                html.H6("En-Route/Corridor", className="mb-2"),
-                                                                                html.Hr(className="my-2"),
-                                                                                html.Ul([
-                                                                                    html.Li("High AADT through-traffic", className="small"),
-                                                                                    html.Li("Long-haul/regional trips", className="small"),
-                                                                                    html.Li("<30 min stops", className="small")
-                                                                                ], className="mb-2"),
-                                                                                html.Strong("Infrastructure:", className="small text-muted d-block"),
-                                                                                html.P("DC Ultra-fast (150-350+ kW)", className="small mb-0")
-                                                                            ])
-                                                                        ], className="p-2")
-                                                                    ], className="h-100 border-success border-2")
-                                                                ], md=4),
-                                                                
-                                                                html.P([
-                                                                    html.Strong("Note: "),
-                                                                    "Unclassified sites have low or unclear demand patterns that don't strongly ",
-                                                                    "match any primary charging type. These are lower-priority locations."
-                                                                ], className="small text-muted fst-italic mt-3")
-                                                            ])
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ])
-                                            ]),
-                                            
-                                            
-                                            
-                                            # Filter and map
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Filter by Charging Type", className="mb-3"),
-                                                            dcc.Dropdown(
-                                                                id='charging-type-filter',
-                                                                options=[
-                                                                    {'label': '🔍 All Types', 'value': 'all'},
-                                                                    {'label': '🛣️ Long-distance share > 5%', 'value': 'long_distance'},
-                                                                    {'label': '🏙️ Other (≤ 5%)', 'value': 'other'}
-                                                                ],
-                                                                value='all',
-                                                                clearable=False,
-                                                                className="mb-3"
-                                                            ),
-                                                            dcc.Graph(id='charging-type-map', config={'displayModeBar': True, 'displaylogo': False})
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ], md=8),
-                                                
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Type Distribution", className="mb-3"),
-                                                            dcc.Graph(id='charging-type-breakdown-chart')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ], md=4)
-                                            ]),
-                                            
-                                            # Characteristics table
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Average Characteristics by Charging Type", className="mb-3"),
-                                                            html.Div(id='charging-type-characteristics-table')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ])
-                                            ]),
-                                            
-                                            # Suitability comparison
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Charging Type Suitability - Selected Sites", className="mb-3"),
-                                                            html.P([
-                                                                "This chart shows how well each selected site scores for different charging types. ",
-                                                                "A site may score high for multiple types (mixed-use potential)."
-                                                            ], className="small text-muted mb-3"),
-                                                            dcc.Graph(id='charging-type-suitability-chart')
-                                                        ])
-                                                    ], className="shadow-sm border-0")
-                                                ])
-                                            ])
-                                        ], label="Charging Types", tab_id="tab-charging-types"),
-                                        
-                                        
-                                        # Tab: Co-location & Expansion Opportunities (NEW)
-                                        dbc.Tab([
-                                            # Summary metrics
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-store fa-2x text-primary mb-2"),
-                                                                html.H3("--", id="avg-retail-colocation", className="mb-0 mt-2"),
-                                                                html.P("Avg Retail/Commercial", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-parking fa-2x text-warning mb-2"),
-                                                                html.H3("--", id="avg-rest-stops", className="mb-0 mt-2"),
-                                                                html.P("Avg Rest Stops (5mi)", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-expand fa-2x text-success mb-2"),
-                                                                html.H3("--", id="avg-expansion-potential", className="mb-0 mt-2"),
-                                                                html.P("Avg Expansion Area", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-star fa-2x text-info mb-2"),
-                                                                html.H3("--", id="high-colocation-count", className="mb-0 mt-2"),
-                                                                html.P("High Co-location Sites", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3)
-                                            ], className="mb-3"),
-                                            
-                                            # Info card
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H5("Co-location & Expansion Opportunities", className="mb-3"),
-                                                            html.P([
-                                                                "Co-location with existing amenities and expansion potential are key factors for ",
-                                                                "successful charging infrastructure deployment. These metrics identify sites with ",
-                                                                "complementary land uses and available space for future growth."
-                                                            ], className="small text-muted mb-3"),
-                                                            
-                                                            dbc.Row([
-                                                                dbc.Col([
-                                                                    html.Strong("Co-location Benefits:", className="d-block mb-2"),
-                                                                    html.Ul([
-                                                                        html.Li("Retail: Drivers can shop while charging", className="small"),
-                                                                        html.Li("Rest stops: Natural stopping points for long-haul routes", className="small"),
-                                                                        html.Li("Gas stations: Familiar fueling locations", className="small"),
-                                                                        html.Li("Hotels: Overnight charging opportunities", className="small")
-                                                                    ])
-                                                                ], md=6),
-                                                                dbc.Col([
-                                                                    html.Strong("Expansion Potential:", className="d-block mb-2"),
-                                                                    html.Ul([
-                                                                        html.Li("Existing parking areas for infrastructure", className="small"),
-                                                                        html.Li("Room to add more charging ports", className="small"),
-                                                                        html.Li("Lower land acquisition costs", className="small"),
-                                                                        html.Li("Easier permitting in developed areas", className="small")
-                                                                    ])
-                                                                ], md=6)
-                                                            ])
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ])
-                                            ]),
-                                            
-                                            # Visualizations
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Co-location Opportunities by Tract", className="mb-3"),
-                                                            dcc.Graph(id='colocation-opportunities-chart')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ], md=8),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Expansion vs Demand", className="mb-3"),
-                                                            dcc.Graph(id='expansion-potential-scatter')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ], md=4)
-                                            ]),
-                                            
-                                            # Rest stop map
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Rest Stop Access Distribution", className="mb-3"),
-                                                            html.P([
-                                                                "Rest stops are critical for long-haul corridor charging. This map shows ",
-                                                                "tracts with high rest stop access within 5 miles."
-                                                            ], className="small text-muted mb-3"),
-                                                            dcc.Graph(id='rest-stop-distribution-map')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ])
-                                            ]),
-                                            
-                                            # Selected sites table
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Co-location Characteristics - Selected Sites", className="mb-3"),
-                                                            html.Div(id='colocation-characteristics-table')
-                                                        ])
-                                                    ], className="shadow-sm border-0")
-                                                ])
-                                            ])
-                                        ], label="Co-location & Expansion", tab_id="tab-colocation"),
-                                        
-                                        
-                                        
-                                        # Tab: Electric Grid Infrastructure (NEW)
-                                        dbc.Tab([
-                                            # Summary metrics
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-bolt fa-2x text-warning mb-2"),
-                                                                html.H3("--", id="avg-grid-readiness", className="mb-0 mt-2"),
-                                                                html.P("Avg EV Readiness Score", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-solar-panel fa-2x text-warning mb-2"),
-                                                                html.H3("--", id="avg-solar-potential", className="mb-0 mt-2"),
-                                                                html.P("Avg Solar Potential", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-plug fa-2x text-success mb-2"),
-                                                                html.H3("--", id="high-grade-sites-count", className="mb-0 mt-2"),
-                                                                html.P("High-Grade Grid Sites", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.Div([
-                                                                html.I(className="fas fa-network-wired fa-2x text-primary mb-2"),
-                                                                html.H3("--", id="avg-grid-suitability", className="mb-0 mt-2"),
-                                                                html.P("Avg Grid Suitability", className="text-muted mb-0 small")
-                                                            ], className="text-center")
-                                                        ])
-                                                    ], className="shadow-sm border-0 h-100")
-                                                ], md=3)
-                                            ], className="mb-3"),
-                                            
-                                            # Info card
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H5("Electric Grid Infrastructure Proximity", className="mb-3"),
-                                                            html.P([
-                                                                "Electric grid infrastructure readiness is critical for EV charging deployment. ",
-                                                                "Sites with high grid suitability can be developed faster and at lower cost."
-                                                            ], className="small text-muted mb-3"),
-                                                            
-                                                            dbc.Row([
-                                                                dbc.Col([
-                                                                    html.Strong("Grid Suitability Factors:", className="d-block mb-2"),
-                                                                    html.Ul([
-                                                                        html.Li("Proximity to existing electrical infrastructure", className="small"),
-                                                                        html.Li("Available electrical capacity", className="small"),
-                                                                        html.Li("Grid upgrade requirements", className="small"),
-                                                                        html.Li("Distribution network quality", className="small")
-                                                                    ])
-                                                                ], md=4),
-                                                                dbc.Col([
-                                                                    html.Strong("Solar Potential Benefits:", className="d-block mb-2"),
-                                                                    html.Ul([
-                                                                        html.Li("Reduces grid demand during peak hours", className="small"),
-                                                                        html.Li("Lower operational costs", className="small"),
-                                                                        html.Li("Renewable energy integration", className="small"),
-                                                                        html.Li("Energy resilience and backup power", className="small")
-                                                                    ])
-                                                                ], md=4),
-                                                                dbc.Col([
-                                                                    html.Strong("Readiness Score (0-100):", className="d-block mb-2"),
-                                                                    html.Ul([
-                                                                        html.Li("70-100: Excellent (ready to deploy)", className="small text-success"),
-                                                                        html.Li("40-69: Good (minor upgrades needed)", className="small text-warning"),
-                                                                        html.Li("0-39: Limited (significant investment)", className="small text-danger")
-                                                                    ])
-                                                                ], md=4)
-                                                            ])
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ])
-                                            ]),
-                                            
-                                            # Grid readiness map
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("EV Infrastructure Readiness Map", className="mb-3"),
-                                                            html.P([
-                                                                "Higher scores (green) indicate better grid infrastructure proximity and readiness. ",
-                                                                "These sites can be developed with lower electrical infrastructure costs."
-                                                            ], className="small text-muted mb-3"),
-                                                            dcc.Graph(id='grid-readiness-map')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ])
-                                            ]),
-                                            
-                                            # Solar and scatter
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Solar Potential by Type", className="mb-3"),
-                                                            dcc.Graph(id='solar-potential-chart')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ], md=7),
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Grid Readiness vs Demand", className="mb-3"),
-                                                            html.P("Ideal sites: high demand + high grid readiness", 
-                                                                   className="small text-muted mb-2"),
-                                                            dcc.Graph(id='grid-suitability-scatter')
-                                                        ])
-                                                    ], className="shadow-sm border-0 mb-3")
-                                                ], md=5)
-                                            ]),
-                                            
-                                            # Selected sites table
-                                            dbc.Row([
-                                                dbc.Col([
-                                                    dbc.Card([
-                                                        dbc.CardBody([
-                                                            html.H6("Grid Infrastructure - Selected Sites", className="mb-3"),
-                                                            html.Div(id='grid-infrastructure-table')
-                                                        ])
-                                                    ], className="shadow-sm border-0")
-                                                ])
-                                            ])
-                                        ], label="Electric Grid Infrastructure", tab_id="tab-grid-infrastructure"),
-                                        
-
-                                        # Tab 4: Documentation
                                         dbc.Tab([
                                             dbc.Card([
                                                 dbc.CardBody([
@@ -1634,18 +926,18 @@ def create_layout():
                                                         html.Ul([
                                                             html.Li([
                                                                 html.Strong("LOCUS Trip Data: "),
-                                                                "Heavy-duty truck trip ends by vocation (Door-to-Door, Local, Regional, Hub-and-Spoke, Long-Haul) and time of day"
+                                                                "Trip ends by purpose, weekday/weekend, equity community and time of day"
                                                             ]),
-                                                            html.Li([
-                                                                html.Strong("Domiciled Vehicles: "),
-                                                                "Heavy and medium-duty trucks domiciled per tract (direct tract-level data from LOCUS). ",
-                                                                "Includes both total domiciled vehicles and percentage of local stops from domiciled vehicles."
-                                                            ]),
-                                                            html.Li([
-                                                                html.Strong("Stop Duration/Air Quality Improvement Potential Filtering: "),
-                                                                "Only trip ends with stops ≥ 30 minutes are considered viable charging opportunities. ",
-                                                                "Stop duration is now 25% of the demand score, combining average stop time and % of eligible trips."
-                                                            ]),
+                                                            # html.Li([
+                                                            #     html.Strong("Domiciled Vehicles: "),
+                                                            #     "Heavy and medium-duty trucks domiciled per tract (direct tract-level data from LOCUS). ",
+                                                            #     "Includes both total domiciled vehicles and percentage of local stops from domiciled vehicles."
+                                                            # ]),
+                                                            # html.Li([
+                                                            #     html.Strong("Stop Duration/Air Quality Improvement Potential Filtering: "),
+                                                            #     "Only trip ends with stops ≥ 30 minutes are considered viable charging opportunities. ",
+                                                            #     "Stop duration is now 25% of the demand score, combining average stop time and % of eligible trips."
+                                                            # ]),
                                                             html.Li([
                                                                 html.Strong("Traffic Volume: "),
                                                                 "AADT-based heavy truck traffic from MassDOT"
@@ -1661,93 +953,91 @@ def create_layout():
                                                     ], className="mb-3"),
                                                     
                                                     
-                                                    html.Hr(),
+                                                    # html.H5("Charging Type Classification", className="mt-4 mb-3"),
+                                                    # html.P([
+                                                    #     "After scoring, each feasible site is classified into one of three charging facility types ",
+                                                    #     "based on demand patterns and operational characteristics. This classification helps ",
+                                                    #     "match infrastructure requirements to actual usage patterns."
+                                                    # ], className="mb-3"),
 
-                                                    html.H5("Charging Type Classification", className="mt-4 mb-3"),
-                                                    html.P([
-                                                        "After scoring, each feasible site is classified into one of three charging facility types ",
-                                                        "based on demand patterns and operational characteristics. This classification helps ",
-                                                        "match infrastructure requirements to actual usage patterns."
-                                                    ], className="mb-3"),
-
-                                                    dbc.Row([
-                                                        dbc.Col([
-                                                            dbc.Card([
-                                                                dbc.CardHeader("Classification Criteria", className="bg-primary text-white"),
-                                                                dbc.CardBody([
-                                                                    html.Div([
-                                                                        html.H6("Depot/Overnight", className="text-primary mb-2"),
-                                                                        html.Ul([
-                                                                            html.Li([html.Strong("Domiciled trucks: "), "> 20 per tract"], className="small"),
-                                                                            html.Li([html.Strong("Domicile ratio: "), "> 60% of total truck activity"], className="small"),
-                                                                            html.Li([html.Strong("Evening activity: "), "> 25% of trips 7pm-6am"], className="small"),
-                                                                            html.Li([html.Strong("Use case: "), "Fleet return-to-base charging"], className="small")
-                                                                        ], className="mb-3"),
+                                                    # dbc.Row([
+                                                    #     dbc.Col([
+                                                    #         dbc.Card([
+                                                    #             dbc.CardHeader("Classification Criteria", className="bg-primary text-white"),
+                                                    #             dbc.CardBody([
+                                                    #                 html.Div([
+                                                    #                     html.H6("Depot/Overnight", className="text-primary mb-2"),
+                                                    #                     html.Ul([
+                                                    #                         html.Li([html.Strong("Domiciled trucks: "), "> 20 per tract"], className="small"),
+                                                    #                         html.Li([html.Strong("Domicile ratio: "), "> 60% of total truck activity"], className="small"),
+                                                    #                         html.Li([html.Strong("Evening activity: "), "> 25% of trips 7pm-6am"], className="small"),
+                                                    #                         html.Li([html.Strong("Use case: "), "Fleet return-to-base charging"], className="small")
+                                                    #                     ], className="mb-3"),
                                                                         
-                                                                        html.H6("Opportunistic/Top-Up", className="text-warning mb-2"),
-                                                                        html.Ul([
-                                                                            html.Li([html.Strong("Stop duration: "), "30-120 minutes average"], className="small"),
-                                                                            html.Li([html.Strong("Trip ends: "), "> 50 charging-eligible stops"], className="small"),
-                                                                            html.Li([html.Strong("Daytime activity: "), "> 40% during 10am-7pm"], className="small"),
-                                                                            html.Li([html.Strong("Use case: "), "Delivery routes, local operations"], className="small")
-                                                                        ], className="mb-3"),
+                                                    #                     html.H6("Opportunistic/Top-Up", className="text-warning mb-2"),
+                                                    #                     html.Ul([
+                                                    #                         html.Li([html.Strong("Stop duration: "), "30-120 minutes average"], className="small"),
+                                                    #                         html.Li([html.Strong("Trip ends: "), "> 50 charging-eligible stops"], className="small"),
+                                                    #                         html.Li([html.Strong("Daytime activity: "), "> 40% during 10am-7pm"], className="small"),
+                                                    #                         html.Li([html.Strong("Use case: "), "Delivery routes, local operations"], className="small")
+                                                    #                     ], className="mb-3"),
                                                                         
-                                                                        html.H6("En-Route/Corridor", className="text-success mb-2"),
-                                                                        html.Ul([
-                                                                            html.Li([html.Strong("AADT: "), "> 500 heavy trucks/day"], className="small"),
-                                                                            html.Li([html.Strong("Long-haul %: "), "> 50% of trips"], className="small"),
-                                                                            html.Li([html.Strong("Highway access: "), "Interstate proximity"], className="small"),
-                                                                            html.Li([html.Strong("Use case: "), "Long-distance freight corridors"], className="small")
-                                                                        ], className="mb-0")
-                                                                    ])
-                                                                ])
-                                                            ], className="h-100")
-                                                        ], md=6),
+                                                    #                     html.H6("En-Route/Corridor", className="text-success mb-2"),
+                                                    #                     html.Ul([
+                                                    #                         html.Li([html.Strong("AADT: "), "> 500 heavy trucks/day"], className="small"),
+                                                    #                         html.Li([html.Strong("Long-haul %: "), "> 50% of trips"], className="small"),
+                                                    #                         html.Li([html.Strong("Highway access: "), "Interstate proximity"], className="small"),
+                                                    #                         html.Li([html.Strong("Use case: "), "Long-distance freight corridors"], className="small")
+                                                    #                     ], className="mb-0")
+                                                    #                 ])
+                                                    #             ])
+                                                    #         ], className="h-100")
+                                                    #     ], md=6),
                                                         
-                                                        dbc.Col([
-                                                            dbc.Card([
-                                                                dbc.CardHeader("Infrastructure Requirements", className="bg-success text-white"),
-                                                                dbc.CardBody([
-                                                                    html.Table([
-                                                                        html.Thead([
-                                                                            html.Tr([
-                                                                                html.Th("Type", className="small"),
-                                                                                html.Th("Power Level", className="small"),
-                                                                                html.Th("Dwell Time", className="small"),
-                                                                                html.Th("Chargers/Site", className="small")
-                                                                            ])
-                                                                        ]),
-                                                                        html.Tbody([
-                                                                            html.Tr([
-                                                                                html.Td("Depot", className="small"),
-                                                                                html.Td("7-19 kW (L2)", className="small"),
-                                                                                html.Td("8+ hours", className="small"),
-                                                                                html.Td("10-50", className="small")
-                                                                            ]),
-                                                                            html.Tr([
-                                                                                html.Td("Opportunistic", className="small"),
-                                                                                html.Td("50-150 kW (DC)", className="small"),
-                                                                                html.Td("30-120 min", className="small"),
-                                                                                html.Td("4-10", className="small")
-                                                                            ]),
-                                                                            html.Tr([
-                                                                                html.Td("Corridor", className="small"),
-                                                                                html.Td("150-350+ kW", className="small"),
-                                                                                html.Td("<30 min", className="small"),
-                                                                                html.Td("4-8", className="small")
-                                                                            ])
-                                                                        ])
-                                                                    ], className="table table-sm table-striped mb-0")
-                                                                ])
-                                                            ], className="h-100")
-                                                        ], md=6)
-                                                    ], className="mb-4"),
+                                                    #     dbc.Col([
+                                                    #         dbc.Card([
+                                                    #             dbc.CardHeader("Infrastructure Requirements", className="bg-success text-white"),
+                                                    #             dbc.CardBody([
+                                                    #                 html.Table([
+                                                    #                     html.Thead([
+                                                    #                         html.Tr([
+                                                    #                             html.Th("Type", className="small"),
+                                                    #                             html.Th("Power Level", className="small"),
+                                                    #                             html.Th("Dwell Time", className="small"),
+                                                    #                             html.Th("Chargers/Site", className="small")
+                                                    #                         ])
+                                                    #                     ]),
+                                                    #                     html.Tbody([
+                                                    #                         html.Tr([
+                                                    #                             html.Td("Depot", className="small"),
+                                                    #                             html.Td("7-19 kW (L2)", className="small"),
+                                                    #                             html.Td("8+ hours", className="small"),
+                                                    #                             html.Td("10-50", className="small")
+                                                    #                         ]),
+                                                    #                         html.Tr([
+                                                    #                             html.Td("Opportunistic", className="small"),
+                                                    #                             html.Td("50-150 kW (DC)", className="small"),
+                                                    #                             html.Td("30-120 min", className="small"),
+                                                    #                             html.Td("4-10", className="small")
+                                                    #                         ]),
+                                                    #                         html.Tr([
+                                                    #                             html.Td("Corridor", className="small"),
+                                                    #                             html.Td("150-350+ kW", className="small"),
+                                                    #                             html.Td("<30 min", className="small"),
+                                                    #                             html.Td("4-8", className="small")
+                                                    #                         ])
+                                                    #                     ])
+                                                    #                 ], className="table table-sm table-striped mb-0")
+                                                    #             ])
+                                                    #         ], className="h-100")
+                                                    #     ], md=6)
+                                                    # ], className="mb-4"),
 
-                                                    html.P([
-                                                        html.Strong("Mixed Type Sites: "),
-                                                        "Some locations qualify for multiple charging types based on diverse demand patterns. ",
-                                                        "These sites may benefit from hybrid infrastructure supporting different use cases."
-                                                    ], className="small text-muted"),
+                                                    # html.P([
+                                                    #     html.Strong("Mixed Type Sites: "),
+                                                    #     "Some locations qualify for multiple charging types based on diverse demand patterns. ",
+                                                    #     "These sites may benefit from hybrid infrastructure supporting different use cases."
+                                                    # ], className="small text-muted"),
                                                     
 
                                                     # Infrastructure Component
@@ -1757,48 +1047,48 @@ def create_layout():
                                                             "Infrastructure"
                                                         ], className="mb-2"),
                                                         html.Ul([
+                                                            # html.Li([
+                                                            #     html.Strong("Electric Grid Infrastructure (40%): "),
+                                                            #     html.Div([
+                                                            #         html.Ul([
+                                                            #             html.Li([
+                                                            #                 html.Strong("E3 Substations: "),
+                                                            #                 "Number and density of substations directly in census tract, feeder headroom capacity (MVA)"
+                                                            #             ]),
+                                                            #             html.Li([
+                                                            #                 html.Strong("National Grid: "),
+                                                            #                 "Available capacity within 5 miles, renewable integration (solar/wind/storage), grid utilization metrics"
+                                                            #             ]),
+                                                            #             html.Li([
+                                                            #                 html.Strong("EV Readiness: "),
+                                                            #                 "Parcel-level suitability, solar potential (kW), existing infrastructure"
+                                                            #             ])
+                                                            #         ], className="small", style={'marginLeft': '20px', 'marginTop': '5px'})
+                                                            #     ])
+                                                            # ]),
                                                             html.Li([
-                                                                html.Strong("Electric Grid Infrastructure (40%): "),
-                                                                html.Div([
-                                                                    html.Ul([
-                                                                        html.Li([
-                                                                            html.Strong("E3 Substations: "),
-                                                                            "Number and density of substations directly in census tract, feeder headroom capacity (MVA)"
-                                                                        ]),
-                                                                        html.Li([
-                                                                            html.Strong("National Grid: "),
-                                                                            "Available capacity within 5 miles, renewable integration (solar/wind/storage), grid utilization metrics"
-                                                                        ]),
-                                                                        html.Li([
-                                                                            html.Strong("EV Readiness: "),
-                                                                            "Parcel-level suitability, solar potential (kW), existing infrastructure"
-                                                                        ])
-                                                                    ], className="small", style={'marginLeft': '20px', 'marginTop': '5px'})
-                                                                ])
+                                                                html.Strong("Existing Truck Charger Gaps (45%): "),
+                                                                "Distance to existing Light-duty charging infrastructure"
                                                             ]),
+                                                            # html.Li([
+                                                            #     html.Strong("Warehouse & Logistics (12%): "),
+                                                            #     "Proximity to warehouses and freight facilities within 5 miles"
+                                                            # ]),
+                                                            # html.Li([
+                                                            #     html.Strong("Co-location Opportunities (12%): "),
+                                                            #     "Retail/commercial POIs, rest stops, gas stations, hotels for public charging"
+                                                            # ]),
+                                                            # html.Li([
+                                                            #     html.Strong("Expansion Potential (8%): "),
+                                                            #     "Available parking area for charging infrastructure expansion"
+                                                            # ]),
                                                             html.Li([
-                                                                html.Strong("Existing Truck Charger Gaps (12%): "),
-                                                                "Distance to existing heavy/medium-duty charging infrastructure"
-                                                            ]),
-                                                            html.Li([
-                                                                html.Strong("Warehouse & Logistics (12%): "),
-                                                                "Proximity to warehouses and freight facilities within 5 miles"
-                                                            ]),
-                                                            html.Li([
-                                                                html.Strong("Co-location Opportunities (12%): "),
-                                                                "Retail/commercial POIs, rest stops, gas stations, hotels for public charging"
-                                                            ]),
-                                                            html.Li([
-                                                                html.Strong("Expansion Potential (8%): "),
-                                                                "Available parking area for charging infrastructure expansion"
-                                                            ]),
-                                                            html.Li([
-                                                                html.Strong("Co-location with Transit & Transit Parking Lots (8%): "),
+                                                                html.Strong("Co-location with Transit & Transit Parking Lots (30%): "),
                                                                 "Parking capacity at transit facilities within 5 miles"
                                                             ]),
                                                             html.Li([
-                                                                html.Strong("Intermodal Facilities (8%): "),
-                                                                "Proximity to rail and intermodal freight terminals"
+                                                                html.Strong("Co-location with government & social services (25%):"),
+                                                                "Government spaces within 5 miles"
                                                             ])
                                                         ], className="small mb-3")
                                                     ], className="mb-3"),
@@ -1810,21 +1100,25 @@ def create_layout():
                                                             "Accessibility"
                                                         ], className="mb-2"),
                                                         html.Ul([
-                                                            html.Li([
-                                                                html.Strong("Interstate & NHS Routes: "),
-                                                                "Binary flags for Interstate highways and National Highway System"
-                                                            ]),
-                                                            html.Li([
-                                                                html.Strong("Freight Corridors: "),
-                                                                "Designated truck routes, multi-lane segments, corridor density"
-                                                            ]),
+                                                            # html.Li([
+                                                            #     html.Strong("Interstate & NHS Routes: "),
+                                                            #     "Binary flags for Interstate highways and National Highway System"
+                                                            # ]),
+                                                            # html.Li([
+                                                            #     html.Strong("Freight Corridors: "),
+                                                            #     "Designated truck routes, multi-lane segments, corridor density"
+                                                            # ]),
                                                             html.Li([
                                                                 html.Strong("Network Density: "),
                                                                 "Auto-oriented facility miles per square mile (EPA SLD)"
                                                             ]),
                                                             html.Li([
-                                                                html.Strong("Logistics Access: "),
-                                                                "Proximity to warehouses, co-location with freight, and truck parking"
+                                                                html.Strong("Co-location with grocery stores: "),
+                                                                "Grocery stores within 5 miles"
+                                                            ]),
+                                                            html.Li([
+                                                                html.Strong("Co-location with gas stations: "),
+                                                                "Gas stations within 5 miles"
                                                             ])
                                                         ], className="small mb-3")
                                                     ], className="mb-3"),
@@ -1863,12 +1157,13 @@ def create_layout():
                                                         dbc.AccordionItem([
                                                             html.P([
                                                                 html.Strong("Source: "),
-                                                                "LOCUS truck trip modeling data"
+                                                                "LOCUS person trip modeling data"
                                                             ], className="mb-2"),
                                                             html.Ul([
-                                                                html.Li("Daily trips by vehicle class (Light, Medium, Heavy Duty)"),
-                                                                html.Li("Daily trips by vocation (6 categories × 4 time periods)"),
-                                                                html.Li("Domiciled vehicle counts and duty cycle stop events"),
+                                                                html.Li("Daily trips by purpose (home, regular, other)"),
+                                                                html.Li("Daily trips by weekday/weekend"),
+                                                                html.Li("Daily trips by equity community"),
+                                                                html.Li("Daily trips by time of day"),
                                                                 html.Li("Aggregated to census tract level")
                                                             ], className="small mb-0")
                                                         ], title="LOCUS Trip Data"),

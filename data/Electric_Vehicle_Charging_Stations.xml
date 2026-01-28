@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?><metadata>
+    <idinfo>
+        <citation>
+            <citeinfo>
+                <title>Electric Vehicle Charging Stations</title>
+                <onlink>https://gis.massdot.state.ma.us/arcgis/rest/services/Assets/EVChargingStations/MapServer</onlink>
+            </citeinfo>
+        </citation>
+        <descript>
+            <abstract>Layer containing the location of active and proposed electrical vehicle charging stations owned by the Massachusetts Department of Transportation.</abstract>
+        </descript>
+        <spdom>
+            <bounding>
+                <westbc>-73.59190748618295</westbc>
+                <eastbc>-69.75220872471479</eastbc>
+                <northbc>42.95641412445954</northbc>
+                <southbc>41.16625796553124</southbc>
+            </bounding>
+        </spdom>
+        <keywords>
+            <theme>
+                <themekt>None</themekt>
+                <themekey>Electric Vehicle</themekey>
+                <themekey>MassDOT</themekey>
+                <themekey>Stations</themekey>
+            </theme>
+        </keywords>
+        <accconst>None</accconst>
+        <useconst>This data is in the public domain and therefore can be used by anyone for any purpose. MassDOT shall not be held liable for any errors in this data. This includes errors of omission, commission, errors concerning the content of the data, and relative and positional accuracy of the data. This data cannot be construed to be a legal document. Primary sources from which this data was compiled must be consulted for verification of information contained in this data.</useconst>
+        <datacred>Massachusetts Department of Transportation, (MassDOT)</datacred>
+    </idinfo>
+    <metainfo>
+        <metstdn>FGDC Content Standard for Digital Geospatial Metadata</metstdn>
+        <metstdv>FGDC-STD-001-1998</metstdv>
+        <mettc>local time</mettc>
+    </metainfo>
+</metadata>

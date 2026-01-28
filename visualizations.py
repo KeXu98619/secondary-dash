@@ -3,10 +3,20 @@ import plotly.graph_objects as go
 import plotly.express as px
 import json
 import numpy as np
+import pandas as pd
 import logging
 
 # Setup logging
 logger = logging.getLogger(__name__)
+
+COMPOSITE_GREEN_SCALE = [
+    [0.00, '#ffffff'],
+    [0.20, '#e5f5e0'],
+    [0.40, '#a1d99b'],
+    [0.60, '#74c476'],
+    [0.80, '#31a354'],
+    [1.00, '#006d2c'],
+]
 
 # Color schemes for different components
 COLOR_SCHEMES = {
@@ -14,8 +24,991 @@ COLOR_SCHEMES = {
     'infrastructure': 'Greens',
     'accessibility': 'Reds',
     'equity': 'Purples',
-    'composite': 'GnBu'
+    'composite': COMPOSITE_GREEN_SCALE
 }
+
+
+
+
+# ---------------------------------------------------------------------------
+# Utility / shared figure helpers (ported from base repo)
+# ---------------------------------------------------------------------------
+
+def create_empty_figure(message: str) -> go.Figure:
+    """Create an empty figure with a message"""
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=0.5,
+        showarrow=False,
+        font=dict(size=16, color="gray")
+    )
+    fig.update_layout(
+        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+        paper_bgcolor='white',
+        plot_bgcolor='white',
+        height=400
+    )
+    return fig
+
+
+# ============================================================================
+# CHART VISUALIZATION FUNCTIONS
+# ============================================================================
+
+def create_score_distribution_chart(scored_gdf: gpd.GeoDataFrame) -> go.Figure:
+    """Create distribution histogram with statistics overlay"""
+    if scored_gdf is None or 'composite_score' not in scored_gdf.columns:
+        return create_empty_figure("No score data available")
+
+    scores = scored_gdf['composite_score'].dropna()
+    scores = scores[scores > 0]  # Filter out infeasible sites
+
+    if len(scores) == 0:
+        return create_empty_figure("No feasible sites found")
+
+    fig = go.Figure()
+
+    # Histogram
+    fig.add_trace(go.Histogram(
+        x=scores,
+        nbinsx=40,
+        marker=dict(
+            color='steelblue',
+            line=dict(color='white', width=1)
+        ),
+        name='Distribution',
+        hovertemplate='Score Range: %{x}<br>Count: %{y}<extra></extra>'
+    ))
+
+    # Add mean line
+    mean_score = scores.mean()
+    fig.add_vline(
+        x=mean_score,
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"Mean: {mean_score:.2f}",
+        annotation_position="top right"
+    )
+
+    # Add median line
+    median_score = scores.median()
+    fig.add_vline(
+        x=median_score,
+        line_dash="dot",
+        line_color="green",
+        annotation_text=f"Median: {median_score:.2f}",
+        annotation_position="top left"
+    )
+
+    fig.update_layout(
+        title="Distribution of Composite Scores (Feasible Tracts Only)",
+        xaxis_title="Composite Score",
+        yaxis_title="Number of Tracts",
+        height=400,
+        showlegend=False,
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(240,240,240,0.5)',
+        font=dict(family="Arial", size=12)
+    )
+
+    return fig
+
+
+def create_component_comparison_chart(scored_gdf: gpd.GeoDataFrame,
+                                      top_n: int = 20) -> go.Figure:
+    """Create grouped bar chart comparing component scores"""
+    if scored_gdf is None:
+        return create_empty_figure("No data available")
+
+    # Filter to feasible sites
+    feasible_scores = scored_gdf[scored_gdf['feasible'] == True]
+
+    if len(feasible_scores) == 0:
+        return create_empty_figure("No feasible sites found")
+
+    top_tracts = feasible_scores.nlargest(min(top_n, len(feasible_scores)), 'composite_score')
+
+    # Create tract labels
+    tract_labels = [
+        f"...{str(geoid)[-4:]}" if 'GEOID' in top_tracts.columns
+        else f"Tract {i + 1}"
+        for i, geoid in enumerate(top_tracts['GEOID'] if 'GEOID' in top_tracts.columns
+                                  else range(len(top_tracts)))
+    ]
+
+    fig = go.Figure()
+
+    components = [
+        ('demand_score', 'Demand', '#3498db'),
+        ('infrastructure_score', 'Infrastructure', '#2ecc71'),
+        ('accessibility_score', 'Accessibility', '#e74c3c'),
+        ('equity_feasibility_score', 'Equity/Feasibility', '#9b59b6')
+    ]
+
+    for col, name, color in components:
+        if col in top_tracts.columns:
+            fig.add_trace(go.Bar(
+                name=name,
+                x=tract_labels,
+                y=top_tracts[col],
+                marker_color=color,
+                hovertemplate=f'{name}: %{{y:.2f}}<extra></extra>'
+            ))
+
+    fig.update_layout(
+        title=f"Component Score Breakdown - Top {len(top_tracts)} Tracts",
+        barmode='group',
+        height=450,
+        xaxis=dict(
+            title="Census Tract",
+            tickangle=-45,
+            tickfont=dict(size=10)
+        ),
+        yaxis=dict(title="Score", range=[0, 100]),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(240,240,240,0.5)',
+        font=dict(family="Arial", size=12)
+    )
+
+    return fig
+
+
+def create_radar_chart(selected_sites: gpd.GeoDataFrame) -> go.Figure:
+    """Create radar chart comparing selected sites"""
+    if selected_sites is None or len(selected_sites) == 0:
+        return create_empty_figure("No sites selected")
+
+    categories = ['Demand', 'Infrastructure', 'Accessibility', 'Equity']
+
+    fig = go.Figure()
+
+    for idx, row in selected_sites.iterrows():
+        values = [
+            row.get('demand_score', 0),
+            row.get('infrastructure_score', 0),
+            row.get('accessibility_score', 0),
+            row.get('equity_feasibility_score', 0)
+        ]
+
+        fig.add_trace(go.Scatterpolar(
+            r=values + [values[0]],  # Close the polygon
+            theta=categories + [categories[0]],
+            fill='toself',
+            name=f'Site {idx + 1}',
+            hovertemplate='%{theta}: %{r:.2f}<extra></extra>'
+        ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100])
+        ),
+        title="Component Score Comparison - Selected Sites",
+        height=450,
+        showlegend=True,
+        paper_bgcolor='white'
+    )
+
+    return fig
+
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def get_score_color(score: float) -> str:
+    """Return color based on score value for Bootstrap badges/progress bars"""
+    if score < 25:
+        return "danger"
+    elif score < 50:
+        return "warning"
+    elif score < 75:
+        return "info"
+    else:
+        return "success"
+        
+       
+        
+def add_truck_chargers_to_map(fig, truck_chargers_gdf):
+    """
+    Add truck charging stations as markers to an existing map figure.
+    
+    Args:
+        fig: Plotly figure object
+        truck_chargers_gdf: GeoDataFrame with truck charger locations
+    
+    Returns:
+        Updated figure with truck charger markers
+    """
+    import plotly.graph_objects as go
+    
+    if truck_chargers_gdf is None or len(truck_chargers_gdf) == 0:
+        return fig
+    
+    # Create hover text
+    hover_text = []
+    for idx, row in truck_chargers_gdf.iterrows():
+        text = f"<b>{row.get('name', 'Truck Charger')}</b><br>"
+        text += f"{row.get('address', '')}<br>"
+        text += f"{row.get('city', '')}, {row.get('state', '')} {row.get('zip', '')}<br>"
+        
+        if pd.notna(row.get('level2_ports')) and row.get('level2_ports', 0) > 0:
+            text += f"Level 2: {int(row['level2_ports'])} ports<br>"
+        if pd.notna(row.get('dcfc_ports')) and row.get('dcfc_ports', 0) > 0:
+            text += f"DC Fast: {int(row['dcfc_ports'])} ports<br>"
+        
+        if pd.notna(row.get('hours')):
+            text += f"Hours: {row['hours']}<br>"
+        if pd.notna(row.get('pricing')):
+            text += f"Pricing: {row['pricing']}"
+        
+        hover_text.append(text)
+    
+    # Add as scatter markers
+    fig.add_trace(go.Scattermapbox(
+        lat=truck_chargers_gdf['lat'],
+        lon=truck_chargers_gdf['lon'],
+        mode='markers',
+        marker=dict(
+            size=12,
+            color='purple',
+            symbol='charging-station',  # or 'circle'
+            line=dict(width=2, color='white')
+        ),
+        text=hover_text,
+        hovertemplate='%{text}<extra></extra>',
+        name='Existing Truck Chargers',
+        showlegend=True
+    ))
+    
+    return fig
+
+
+def create_initial_map() -> go.Figure:
+    """Create initial empty map showing Massachusetts"""
+    fig = go.Figure(go.Scattermapbox(
+        lat=[42.4072],
+        lon=[-71.3824],
+        mode='text',
+        text=[''],
+        showlegend=False,
+        hoverinfo='skip'
+    ))
+
+    fig.update_layout(
+        mapbox={
+            'style': "carto-positron",
+            'center': {'lat': 42.4072, 'lon': -71.3824},
+            'zoom': 6.5
+        },
+        margin={"r": 0, "t": 50, "l": 0, "b": 0},
+        title={
+            'text': "Massachusetts Truck Charging Site Selection",
+            'font': {'size': 18, 'color': "#2c3e50", 'family': "Arial Black"},
+            'x': 0.5,
+            'xanchor': 'center'
+        },
+        height=700,
+        paper_bgcolor='white',
+        annotations=[{
+            'text': "Click 'Run Analysis' to begin site selection",
+            'xref': "paper",
+            'yref': "paper",
+            'x': 0.5,
+            'y': 0.5,
+            'showarrow': False,
+            'font': {'size': 16, 'color': "#7f8c8d"},
+            'bgcolor': "rgba(255,255,255,0.9)",
+            'bordercolor': "#bdc3c7",
+            'borderwidth': 2,
+            'borderpad': 10
+        }]
+    )
+
+    return fig
+
+
+def create_empty_figure(message: str) -> go.Figure:
+    """Create an empty figure with a message"""
+    fig = go.Figure()
+    fig.add_annotation(
+        text=message,
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=0.5,
+        showarrow=False,
+        font=dict(size=16, color="gray")
+    )
+    fig.update_layout(
+        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
+        paper_bgcolor='white',
+        plot_bgcolor='white',
+        height=400
+    )
+    return fig
+
+
+# ============================================================================
+# CHART VISUALIZATION FUNCTIONS
+# ============================================================================
+
+def create_score_distribution_chart(scored_gdf: gpd.GeoDataFrame) -> go.Figure:
+    """Create distribution histogram with statistics overlay"""
+    if scored_gdf is None or 'composite_score' not in scored_gdf.columns:
+        return create_empty_figure("No score data available")
+
+    scores = scored_gdf['composite_score'].dropna()
+    scores = scores[scores > 0]  # Filter out infeasible sites
+
+    if len(scores) == 0:
+        return create_empty_figure("No feasible sites found")
+
+    fig = go.Figure()
+
+    # Histogram
+    fig.add_trace(go.Histogram(
+        x=scores,
+        nbinsx=40,
+        marker=dict(
+            color='steelblue',
+            line=dict(color='white', width=1)
+        ),
+        name='Distribution',
+        hovertemplate='Score Range: %{x}<br>Count: %{y}<extra></extra>'
+    ))
+
+    # Add mean line
+    mean_score = scores.mean()
+    fig.add_vline(
+        x=mean_score,
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"Mean: {mean_score:.2f}",
+        annotation_position="top right"
+    )
+
+    # Add median line
+    median_score = scores.median()
+    fig.add_vline(
+        x=median_score,
+        line_dash="dot",
+        line_color="green",
+        annotation_text=f"Median: {median_score:.2f}",
+        annotation_position="top left"
+    )
+
+    fig.update_layout(
+        title="Distribution of Composite Scores (Feasible Tracts Only)",
+        xaxis_title="Composite Score",
+        yaxis_title="Number of Tracts",
+        height=400,
+        showlegend=False,
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(240,240,240,0.5)',
+        font=dict(family="Arial", size=12)
+    )
+
+    return fig
+
+
+def create_component_comparison_chart(scored_gdf: gpd.GeoDataFrame,
+                                      top_n: int = 20) -> go.Figure:
+    """Create grouped bar chart comparing component scores"""
+    if scored_gdf is None:
+        return create_empty_figure("No data available")
+
+    # Filter to feasible sites
+    feasible_scores = scored_gdf[scored_gdf['feasible'] == True]
+
+    if len(feasible_scores) == 0:
+        return create_empty_figure("No feasible sites found")
+
+    top_tracts = feasible_scores.nlargest(min(top_n, len(feasible_scores)), 'composite_score')
+
+    # Create tract labels
+    tract_labels = [
+        f"...{str(geoid)[-4:]}" if 'GEOID' in top_tracts.columns
+        else f"Tract {i + 1}"
+        for i, geoid in enumerate(top_tracts['GEOID'] if 'GEOID' in top_tracts.columns
+                                  else range(len(top_tracts)))
+    ]
+
+    fig = go.Figure()
+
+    components = [
+        ('demand_score', 'Demand', '#3498db'),
+        ('infrastructure_score', 'Infrastructure', '#2ecc71'),
+        ('accessibility_score', 'Accessibility', '#e74c3c'),
+        ('equity_feasibility_score', 'Equity/Feasibility', '#9b59b6')
+    ]
+
+    for col, name, color in components:
+        if col in top_tracts.columns:
+            fig.add_trace(go.Bar(
+                name=name,
+                x=tract_labels,
+                y=top_tracts[col],
+                marker_color=color,
+                hovertemplate=f'{name}: %{{y:.2f}}<extra></extra>'
+            ))
+
+    fig.update_layout(
+        title=f"Component Score Breakdown - Top {len(top_tracts)} Tracts",
+        barmode='group',
+        height=450,
+        xaxis=dict(
+            title="Census Tract",
+            tickangle=-45,
+            tickfont=dict(size=10)
+        ),
+        yaxis=dict(title="Score", range=[0, 100]),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(240,240,240,0.5)',
+        font=dict(family="Arial", size=12)
+    )
+
+    return fig
+
+
+def create_radar_chart(selected_sites: gpd.GeoDataFrame) -> go.Figure:
+    """Create radar chart comparing selected sites"""
+    if selected_sites is None or len(selected_sites) == 0:
+        return create_empty_figure("No sites selected")
+
+    categories = ['Demand', 'Infrastructure', 'Accessibility', 'Equity']
+
+    fig = go.Figure()
+
+    for idx, row in selected_sites.iterrows():
+        values = [
+            row.get('demand_score', 0),
+            row.get('infrastructure_score', 0),
+            row.get('accessibility_score', 0),
+            row.get('equity_feasibility_score', 0)
+        ]
+
+        fig.add_trace(go.Scatterpolar(
+            r=values + [values[0]],  # Close the polygon
+            theta=categories + [categories[0]],
+            fill='toself',
+            name=f'Site {idx + 1}',
+            hovertemplate='%{theta}: %{r:.2f}<extra></extra>'
+        ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100])
+        ),
+        title="Component Score Comparison - Selected Sites",
+        height=450,
+        showlegend=True,
+        paper_bgcolor='white'
+    )
+
+    return fig
+
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def get_score_color(score: float) -> str:
+    """Return color based on score value for Bootstrap badges/progress bars"""
+    if score < 25:
+        return "danger"
+    elif score < 50:
+        return "warning"
+    elif score < 75:
+        return "info"
+    else:
+        return "success"
+        
+       
+        
+def add_truck_chargers_to_map(fig, truck_chargers_gdf):
+    """
+    Add truck charging stations as markers to an existing map figure.
+    
+    Args:
+        fig: Plotly figure object
+        truck_chargers_gdf: GeoDataFrame with truck charger locations
+    
+    Returns:
+        Updated figure with truck charger markers
+    """
+    import plotly.graph_objects as go
+    
+    if truck_chargers_gdf is None or len(truck_chargers_gdf) == 0:
+        return fig
+    
+    # Create hover text
+    hover_text = []
+    for idx, row in truck_chargers_gdf.iterrows():
+        text = f"<b>{row.get('name', 'Truck Charger')}</b><br>"
+        text += f"{row.get('address', '')}<br>"
+        text += f"{row.get('city', '')}, {row.get('state', '')} {row.get('zip', '')}<br>"
+        
+        if pd.notna(row.get('level2_ports')) and row.get('level2_ports', 0) > 0:
+            text += f"Level 2: {int(row['level2_ports'])} ports<br>"
+        if pd.notna(row.get('dcfc_ports')) and row.get('dcfc_ports', 0) > 0:
+            text += f"DC Fast: {int(row['dcfc_ports'])} ports<br>"
+        
+        if pd.notna(row.get('hours')):
+            text += f"Hours: {row['hours']}<br>"
+        if pd.notna(row.get('pricing')):
+            text += f"Pricing: {row['pricing']}"
+        
+        hover_text.append(text)
+    
+    # Add as scatter markers
+    fig.add_trace(go.Scattermapbox(
+        lat=truck_chargers_gdf['lat'],
+        lon=truck_chargers_gdf['lon'],
+        mode='markers',
+        marker=dict(
+            size=12,
+            color='purple',
+            symbol='charging-station',  # or 'circle'
+            line=dict(width=2, color='white')
+        ),
+        text=hover_text,
+        hovertemplate='%{text}<extra></extra>',
+        name='Existing Truck Chargers',
+        showlegend=True
+    ))
+    
+    return fig
+
+
+def create_score_distribution_chart(scored_gdf: gpd.GeoDataFrame) -> go.Figure:
+    """Create distribution histogram with statistics overlay"""
+    if scored_gdf is None or 'composite_score' not in scored_gdf.columns:
+        return create_empty_figure("No score data available")
+
+    scores = scored_gdf['composite_score'].dropna()
+    scores = scores[scores > 0]  # Filter out infeasible sites
+
+    if len(scores) == 0:
+        return create_empty_figure("No feasible sites found")
+
+    fig = go.Figure()
+
+    # Histogram
+    fig.add_trace(go.Histogram(
+        x=scores,
+        nbinsx=40,
+        marker=dict(
+            color='steelblue',
+            line=dict(color='white', width=1)
+        ),
+        name='Distribution',
+        hovertemplate='Score Range: %{x}<br>Count: %{y}<extra></extra>'
+    ))
+
+    # Add mean line
+    mean_score = scores.mean()
+    fig.add_vline(
+        x=mean_score,
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"Mean: {mean_score:.2f}",
+        annotation_position="top right"
+    )
+
+    # Add median line
+    median_score = scores.median()
+    fig.add_vline(
+        x=median_score,
+        line_dash="dot",
+        line_color="green",
+        annotation_text=f"Median: {median_score:.2f}",
+        annotation_position="top left"
+    )
+
+    fig.update_layout(
+        title="Distribution of Composite Scores (Feasible Tracts Only)",
+        xaxis_title="Composite Score",
+        yaxis_title="Number of Tracts",
+        height=400,
+        showlegend=False,
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(240,240,240,0.5)',
+        font=dict(family="Arial", size=12)
+    )
+
+    return fig
+
+
+def create_component_comparison_chart(scored_gdf: gpd.GeoDataFrame,
+                                      top_n: int = 20) -> go.Figure:
+    """Create grouped bar chart comparing component scores"""
+    if scored_gdf is None:
+        return create_empty_figure("No data available")
+
+    # Filter to feasible sites
+    feasible_scores = scored_gdf[scored_gdf['feasible'] == True]
+
+    if len(feasible_scores) == 0:
+        return create_empty_figure("No feasible sites found")
+
+    top_tracts = feasible_scores.nlargest(min(top_n, len(feasible_scores)), 'composite_score')
+
+    # Create tract labels
+    tract_labels = [
+        f"...{str(geoid)[-4:]}" if 'GEOID' in top_tracts.columns
+        else f"Tract {i + 1}"
+        for i, geoid in enumerate(top_tracts['GEOID'] if 'GEOID' in top_tracts.columns
+                                  else range(len(top_tracts)))
+    ]
+
+    fig = go.Figure()
+
+    components = [
+        ('demand_score', 'Demand', '#3498db'),
+        ('infrastructure_score', 'Infrastructure', '#2ecc71'),
+        ('accessibility_score', 'Accessibility', '#e74c3c'),
+        ('equity_feasibility_score', 'Equity/Feasibility', '#9b59b6')
+    ]
+
+    for col, name, color in components:
+        if col in top_tracts.columns:
+            fig.add_trace(go.Bar(
+                name=name,
+                x=tract_labels,
+                y=top_tracts[col],
+                marker_color=color,
+                hovertemplate=f'{name}: %{{y:.2f}}<extra></extra>'
+            ))
+
+    fig.update_layout(
+        title=f"Component Score Breakdown - Top {len(top_tracts)} Tracts",
+        barmode='group',
+        height=450,
+        xaxis=dict(
+            title="Census Tract",
+            tickangle=-45,
+            tickfont=dict(size=10)
+        ),
+        yaxis=dict(title="Score", range=[0, 100]),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(240,240,240,0.5)',
+        font=dict(family="Arial", size=12)
+    )
+
+    return fig
+
+
+def create_radar_chart(selected_sites: gpd.GeoDataFrame) -> go.Figure:
+    """Create radar chart comparing selected sites"""
+    if selected_sites is None or len(selected_sites) == 0:
+        return create_empty_figure("No sites selected")
+
+    categories = ['Demand', 'Infrastructure', 'Accessibility', 'Equity']
+
+    fig = go.Figure()
+
+    for idx, row in selected_sites.iterrows():
+        values = [
+            row.get('demand_score', 0),
+            row.get('infrastructure_score', 0),
+            row.get('accessibility_score', 0),
+            row.get('equity_feasibility_score', 0)
+        ]
+
+        fig.add_trace(go.Scatterpolar(
+            r=values + [values[0]],  # Close the polygon
+            theta=categories + [categories[0]],
+            fill='toself',
+            name=f'Site {idx + 1}',
+            hovertemplate='%{theta}: %{r:.2f}<extra></extra>'
+        ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100])
+        ),
+        title="Component Score Comparison - Selected Sites",
+        height=450,
+        showlegend=True,
+        paper_bgcolor='white'
+    )
+
+    return fig
+
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def get_score_color(score: float) -> str:
+    """Return color based on score value for Bootstrap badges/progress bars"""
+    if score < 25:
+        return "danger"
+    elif score < 50:
+        return "warning"
+    elif score < 75:
+        return "info"
+    else:
+        return "success"
+        
+       
+        
+def add_truck_chargers_to_map(fig, truck_chargers_gdf):
+    """
+    Add truck charging stations as markers to an existing map figure.
+    
+    Args:
+        fig: Plotly figure object
+        truck_chargers_gdf: GeoDataFrame with truck charger locations
+    
+    Returns:
+        Updated figure with truck charger markers
+    """
+    import plotly.graph_objects as go
+    
+    if truck_chargers_gdf is None or len(truck_chargers_gdf) == 0:
+        return fig
+    
+    # Create hover text
+    hover_text = []
+    for idx, row in truck_chargers_gdf.iterrows():
+        text = f"<b>{row.get('name', 'Truck Charger')}</b><br>"
+        text += f"{row.get('address', '')}<br>"
+        text += f"{row.get('city', '')}, {row.get('state', '')} {row.get('zip', '')}<br>"
+        
+        if pd.notna(row.get('level2_ports')) and row.get('level2_ports', 0) > 0:
+            text += f"Level 2: {int(row['level2_ports'])} ports<br>"
+        if pd.notna(row.get('dcfc_ports')) and row.get('dcfc_ports', 0) > 0:
+            text += f"DC Fast: {int(row['dcfc_ports'])} ports<br>"
+        
+        if pd.notna(row.get('hours')):
+            text += f"Hours: {row['hours']}<br>"
+        if pd.notna(row.get('pricing')):
+            text += f"Pricing: {row['pricing']}"
+        
+        hover_text.append(text)
+    
+    # Add as scatter markers
+    fig.add_trace(go.Scattermapbox(
+        lat=truck_chargers_gdf['lat'],
+        lon=truck_chargers_gdf['lon'],
+        mode='markers',
+        marker=dict(
+            size=12,
+            color='purple',
+            symbol='charging-station',  # or 'circle'
+            line=dict(width=2, color='white')
+        ),
+        text=hover_text,
+        hovertemplate='%{text}<extra></extra>',
+        name='Existing Truck Chargers',
+        showlegend=True
+    ))
+    
+    return fig
+
+
+def create_component_comparison_chart(scored_gdf: gpd.GeoDataFrame,
+                                      top_n: int = 20) -> go.Figure:
+    """Create grouped bar chart comparing component scores"""
+    if scored_gdf is None:
+        return create_empty_figure("No data available")
+
+    # Filter to feasible sites
+    feasible_scores = scored_gdf[scored_gdf['feasible'] == True]
+
+    if len(feasible_scores) == 0:
+        return create_empty_figure("No feasible sites found")
+
+    top_tracts = feasible_scores.nlargest(min(top_n, len(feasible_scores)), 'composite_score')
+
+    # Create tract labels
+    tract_labels = [
+        f"...{str(geoid)[-4:]}" if 'GEOID' in top_tracts.columns
+        else f"Tract {i + 1}"
+        for i, geoid in enumerate(top_tracts['GEOID'] if 'GEOID' in top_tracts.columns
+                                  else range(len(top_tracts)))
+    ]
+
+    fig = go.Figure()
+
+    components = [
+        ('demand_score', 'Demand', '#3498db'),
+        ('infrastructure_score', 'Infrastructure', '#2ecc71'),
+        ('accessibility_score', 'Accessibility', '#e74c3c'),
+        ('equity_feasibility_score', 'Equity/Feasibility', '#9b59b6')
+    ]
+
+    for col, name, color in components:
+        if col in top_tracts.columns:
+            fig.add_trace(go.Bar(
+                name=name,
+                x=tract_labels,
+                y=top_tracts[col],
+                marker_color=color,
+                hovertemplate=f'{name}: %{{y:.2f}}<extra></extra>'
+            ))
+
+    fig.update_layout(
+        title=f"Component Score Breakdown - Top {len(top_tracts)} Tracts",
+        barmode='group',
+        height=450,
+        xaxis=dict(
+            title="Census Tract",
+            tickangle=-45,
+            tickfont=dict(size=10)
+        ),
+        yaxis=dict(title="Score", range=[0, 100]),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        paper_bgcolor='white',
+        plot_bgcolor='rgba(240,240,240,0.5)',
+        font=dict(family="Arial", size=12)
+    )
+
+    return fig
+
+
+def create_radar_chart(selected_sites: gpd.GeoDataFrame) -> go.Figure:
+    """Create radar chart comparing selected sites"""
+    if selected_sites is None or len(selected_sites) == 0:
+        return create_empty_figure("No sites selected")
+
+    categories = ['Demand', 'Infrastructure', 'Accessibility', 'Equity']
+
+    fig = go.Figure()
+
+    for idx, row in selected_sites.iterrows():
+        values = [
+            row.get('demand_score', 0),
+            row.get('infrastructure_score', 0),
+            row.get('accessibility_score', 0),
+            row.get('equity_feasibility_score', 0)
+        ]
+
+        fig.add_trace(go.Scatterpolar(
+            r=values + [values[0]],  # Close the polygon
+            theta=categories + [categories[0]],
+            fill='toself',
+            name=f'Site {idx + 1}',
+            hovertemplate='%{theta}: %{r:.2f}<extra></extra>'
+        ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 100])
+        ),
+        title="Component Score Comparison - Selected Sites",
+        height=450,
+        showlegend=True,
+        paper_bgcolor='white'
+    )
+
+    return fig
+
+
+# ============================================================================
+# UTILITY FUNCTIONS
+# ============================================================================
+
+def get_score_color(score: float) -> str:
+    """Return color based on score value for Bootstrap badges/progress bars"""
+    if score < 25:
+        return "danger"
+    elif score < 50:
+        return "warning"
+    elif score < 75:
+        return "info"
+    else:
+        return "success"
+        
+       
+        
+def add_truck_chargers_to_map(fig, truck_chargers_gdf):
+    """
+    Add truck charging stations as markers to an existing map figure.
+    
+    Args:
+        fig: Plotly figure object
+        truck_chargers_gdf: GeoDataFrame with truck charger locations
+    
+    Returns:
+        Updated figure with truck charger markers
+    """
+    import plotly.graph_objects as go
+    
+    if truck_chargers_gdf is None or len(truck_chargers_gdf) == 0:
+        return fig
+    
+    # Create hover text
+    hover_text = []
+    for idx, row in truck_chargers_gdf.iterrows():
+        text = f"<b>{row.get('name', 'Truck Charger')}</b><br>"
+        text += f"{row.get('address', '')}<br>"
+        text += f"{row.get('city', '')}, {row.get('state', '')} {row.get('zip', '')}<br>"
+        
+        if pd.notna(row.get('level2_ports')) and row.get('level2_ports', 0) > 0:
+            text += f"Level 2: {int(row['level2_ports'])} ports<br>"
+        if pd.notna(row.get('dcfc_ports')) and row.get('dcfc_ports', 0) > 0:
+            text += f"DC Fast: {int(row['dcfc_ports'])} ports<br>"
+        
+        if pd.notna(row.get('hours')):
+            text += f"Hours: {row['hours']}<br>"
+        if pd.notna(row.get('pricing')):
+            text += f"Pricing: {row['pricing']}"
+        
+        hover_text.append(text)
+    
+    # Add as scatter markers
+    fig.add_trace(go.Scattermapbox(
+        lat=truck_chargers_gdf['lat'],
+        lon=truck_chargers_gdf['lon'],
+        mode='markers',
+        marker=dict(
+            size=12,
+            color='purple',
+            symbol='charging-station',  # or 'circle'
+            line=dict(width=2, color='white')
+        ),
+        text=hover_text,
+        hovertemplate='%{text}<extra></extra>',
+        name='Existing Truck Chargers',
+        showlegend=True
+    ))
+    
+    return fig
 
 
 # ============================================================================
@@ -217,6 +1210,7 @@ def create_choropleth_map(gdf, column, title, colorscale='Viridis'):
     return fig
 
 
+
 def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
                              selected_gdf: gpd.GeoDataFrame) -> go.Figure:
     """Create comprehensive map showing scored tracts with optimal sites"""
@@ -227,20 +1221,41 @@ def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
         # Ensure CRS is WGS84
         if scored_gdf.crs is not None and scored_gdf.crs != 'EPSG:4326':
             scored_gdf = scored_gdf.to_crs('EPSG:4326')
-        if selected_gdf is not None and selected_gdf.crs is not None and selected_gdf.crs != 'EPSG:4326':
+        if selected_gdf is not None and len(selected_gdf) > 0 and selected_gdf.crs is not None and selected_gdf.crs != 'EPSG:4326':
             selected_gdf = selected_gdf.to_crs('EPSG:4326')
 
         geojson_all = json.loads(scored_gdf.to_json())
 
-        # Default viewport: show the full state (Massachusetts).
-        # We keep a stable default center/zoom so the map doesn't start
-        # overly zoomed-in (e.g., when only a subset of data is present).
+        # Default viewport: show Massachusetts
         center_lat = 42.4072
         center_lon = -71.3824
 
+        # Precompute hover data arrays (robust to missing columns)
+        cols = ['GEOID','composite_score','demand_score','infrastructure_score','accessibility_score','equity_feasibility_score']
+        bg_df = scored_gdf.reindex(columns=cols).copy()
+        if 'GEOID' not in bg_df.columns or bg_df['GEOID'].isna().all():
+            bg_df['GEOID'] = scored_gdf.index.astype(str)
+        bg_df = bg_df.fillna(0)
+        bg_customdata = bg_df[cols].values
+
+        sel_customdata = None
+        if selected_gdf is not None and len(selected_gdf) > 0:
+            sel_df = selected_gdf.reindex(columns=cols).copy()
+            if 'GEOID' not in sel_df.columns or sel_df['GEOID'].isna().all():
+                sel_df['GEOID'] = selected_gdf.index.astype(str)
+            # If component columns missing on selected_gdf, try to pull from scored_gdf by index
+            for c in cols[1:]:
+                if c not in selected_gdf.columns and c in scored_gdf.columns:
+                    try:
+                        sel_df[c] = scored_gdf.loc[selected_gdf.index, c].values
+                    except Exception:
+                        pass
+            sel_df = sel_df.fillna(0)
+            sel_customdata = sel_df[cols].values
+
         fig = go.Figure()
 
-        # Background: All scored tracts
+        # Background: all tracts heatmap
         fig.add_trace(go.Choroplethmapbox(
             geojson=geojson_all,
             locations=scored_gdf.index,
@@ -249,94 +1264,69 @@ def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
             marker_opacity=0.6,
             marker_line_width=0.3,
             marker_line_color='rgba(255,255,255,0.5)',
-            colorbar=dict(
-                title='Score',
-                thickness=12,
-                len=0.6,
-                x=1.0
-            ),
+            colorbar=dict(title='Score', thickness=12, len=0.6, x=1.0),
             name='All Tracts',
             hovertemplate=(
-                '<b>Tract: %{customdata[0]}</b><br>' +
-                'Score: %{z:.2f}<br>' +
+                '<b>Tract: %{customdata[0]}</b><br>'
+                'Score: %{customdata[1]:.2f}<br>'
+                'Demand: %{customdata[2]:.2f}<br>'
+                'Infrastructure: %{customdata[3]:.2f}<br>'
+                'Accessibility: %{customdata[4]:.2f}<br>'
+                'Equity & Env: %{customdata[5]:.2f}<br>'
                 '<extra></extra>'
             ),
-            customdata=scored_gdf[['GEOID']].values if 'GEOID' in scored_gdf.columns
-            else np.arange(len(scored_gdf)).reshape(-1, 1),
-            featureidkey="id"
+            customdata=bg_customdata,
+            featureidkey="id",
         ))
 
-        # Foreground: Selected optimal sites
+        # Foreground: selected sites
         if selected_gdf is not None and len(selected_gdf) > 0:
             centroids = selected_gdf.geometry.centroid
 
-            # Add star markers for selected sites
             fig.add_trace(go.Scattermapbox(
                 lat=centroids.y,
                 lon=centroids.x,
                 mode='markers+text',
-                marker=dict(
-                    size=24,
-                    color='#FFD700',  # Gold
-                    symbol='star',
-                ),
+                marker=dict(size=24, color='#FFD400', symbol='star'),
                 text=[f"#{i + 1}" for i in range(len(selected_gdf))],
                 textposition="middle center",
                 textfont=dict(size=10, color='#1a1a1a', family='Arial Black'),
                 name='Optimal Sites',
                 hovertemplate=(
-                    '<b>Site #%{text}</b><br>' +
-                    'GEOID: %{customdata[0]}<br>' +
-                    'Score: %{customdata[1]:.2f}<br>' +
-                    'Demand: %{customdata[2]:.2f}<br>' +
-                    'Infrastructure: %{customdata[3]:.2f}<br>' +
+                    '<b>Site %{text}</b><br>'
+                    'GEOID: %{customdata[0]}<br>'
+                    'Score: %{customdata[1]:.2f}<br>'
+                    'Demand: %{customdata[2]:.2f}<br>'
+                    'Infrastructure: %{customdata[3]:.2f}<br>'
+                    'Accessibility: %{customdata[4]:.2f}<br>'
+                    'Equity & Env: %{customdata[5]:.2f}<br>'
                     '<extra></extra>'
                 ),
-                customdata=selected_gdf[[
-                    'GEOID' if 'GEOID' in selected_gdf.columns else selected_gdf.index.name or 'index',
-                    'composite_score',
-                    'demand_score',
-                    'infrastructure_score'
-                ]].values
+                customdata=sel_customdata if sel_customdata is not None else selected_gdf[['GEOID']].fillna('').values,
             ))
 
-            # Add larger background circles
+            # Larger translucent circle behind each star for visibility
+            # (Yellow, to avoid "green on green" on the basemap)
             fig.add_trace(go.Scattermapbox(
                 lat=centroids.y,
                 lon=centroids.x,
                 mode='markers',
-                marker=dict(
-                    size=40,
-                    color='rgba(255, 215, 0, 0.3)',
-                    symbol='circle'
-                ),
+                marker=dict(size=40, color='rgba(255, 212, 0, 0.25)', symbol='circle'),
                 showlegend=False,
                 hoverinfo='skip'
             ))
 
         fig.update_layout(
-            mapbox=dict(
-                style="carto-positron",
-                zoom=6.5,
-                center={"lat": center_lat, "lon": center_lon}
-            ),
-            margin={"r": 0, "t": 50, "l": 0, "b": 0},
-            title=dict(
-                text="Optimal Truck Charging Sites - Massachusetts",
-                font=dict(size=18, color="#2c3e50", family="Arial Black"),
-                x=0.5,
-                xanchor='center'
-            ),
+            mapbox=dict(style='carto-positron', zoom=6.5, center={'lat': center_lat, 'lon': center_lon}),
+            margin={'r': 0, 't': 50, 'l': 0, 'b': 0},
+            title=dict(text='Optimal Truck Charging Sites - Massachusetts', font=dict(size=18, color='#2c3e50', family='Arial Black'), x=0.5, xanchor='center'),
             height=700,
             showlegend=True,
             legend=dict(
-                yanchor="top",
-                y=0.99,
-                xanchor="left",
-                x=0.01,
-                bgcolor="rgba(255,255,255,0.9)",
-                bordercolor="gray",
-                borderwidth=1
+                yanchor='top', y=0.99,
+                xanchor='left', x=0.01,
+                bgcolor='rgba(255,255,255,0.9)',
+                bordercolor='gray', borderwidth=1
             ),
             paper_bgcolor='white'
         )
@@ -346,202 +1336,6 @@ def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
     except Exception as e:
         logger.error(f"Error creating optimal sites map: {e}", exc_info=True)
         return create_empty_figure(f"Error: {str(e)}")
-
-
-def create_initial_map() -> go.Figure:
-    """Create initial empty map showing Massachusetts"""
-    fig = go.Figure(go.Scattermapbox(
-        lat=[42.4072],
-        lon=[-71.3824],
-        mode='text',
-        text=[''],
-        showlegend=False,
-        hoverinfo='skip'
-    ))
-
-    fig.update_layout(
-        mapbox={
-            'style': "carto-positron",
-            'center': {'lat': 42.4072, 'lon': -71.3824},
-            'zoom': 6.5
-        },
-        margin={"r": 0, "t": 50, "l": 0, "b": 0},
-        title={
-            'text': "Massachusetts Truck Charging Site Selection",
-            'font': {'size': 18, 'color': "#2c3e50", 'family': "Arial Black"},
-            'x': 0.5,
-            'xanchor': 'center'
-        },
-        height=700,
-        paper_bgcolor='white',
-        annotations=[{
-            'text': "Click 'Run Analysis' to begin site selection",
-            'xref': "paper",
-            'yref': "paper",
-            'x': 0.5,
-            'y': 0.5,
-            'showarrow': False,
-            'font': {'size': 16, 'color': "#7f8c8d"},
-            'bgcolor': "rgba(255,255,255,0.9)",
-            'bordercolor': "#bdc3c7",
-            'borderwidth': 2,
-            'borderpad': 10
-        }]
-    )
-
-    return fig
-
-
-def create_empty_figure(message: str) -> go.Figure:
-    """Create an empty figure with a message"""
-    fig = go.Figure()
-    fig.add_annotation(
-        text=message,
-        xref="paper",
-        yref="paper",
-        x=0.5,
-        y=0.5,
-        showarrow=False,
-        font=dict(size=16, color="gray")
-    )
-    fig.update_layout(
-        xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-        yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
-        paper_bgcolor='white',
-        plot_bgcolor='white',
-        height=400
-    )
-    return fig
-
-
-# ============================================================================
-# CHART VISUALIZATION FUNCTIONS
-# ============================================================================
-
-def create_score_distribution_chart(scored_gdf: gpd.GeoDataFrame) -> go.Figure:
-    """Create distribution histogram with statistics overlay"""
-    if scored_gdf is None or 'composite_score' not in scored_gdf.columns:
-        return create_empty_figure("No score data available")
-
-    scores = scored_gdf['composite_score'].dropna()
-    scores = scores[scores > 0]  # Filter out infeasible sites
-
-    if len(scores) == 0:
-        return create_empty_figure("No feasible sites found")
-
-    fig = go.Figure()
-
-    # Histogram
-    fig.add_trace(go.Histogram(
-        x=scores,
-        nbinsx=40,
-        marker=dict(
-            color='steelblue',
-            line=dict(color='white', width=1)
-        ),
-        name='Distribution',
-        hovertemplate='Score Range: %{x}<br>Count: %{y}<extra></extra>'
-    ))
-
-    # Add mean line
-    mean_score = scores.mean()
-    fig.add_vline(
-        x=mean_score,
-        line_dash="dash",
-        line_color="red",
-        annotation_text=f"Mean: {mean_score:.2f}",
-        annotation_position="top right"
-    )
-
-    # Add median line
-    median_score = scores.median()
-    fig.add_vline(
-        x=median_score,
-        line_dash="dot",
-        line_color="green",
-        annotation_text=f"Median: {median_score:.2f}",
-        annotation_position="top left"
-    )
-
-    fig.update_layout(
-        title="Distribution of Composite Scores (Feasible Tracts Only)",
-        xaxis_title="Composite Score",
-        yaxis_title="Number of Tracts",
-        height=400,
-        showlegend=False,
-        paper_bgcolor='white',
-        plot_bgcolor='rgba(240,240,240,0.5)',
-        font=dict(family="Arial", size=12)
-    )
-
-    return fig
-
-
-def create_component_comparison_chart(scored_gdf: gpd.GeoDataFrame,
-                                      top_n: int = 20) -> go.Figure:
-    """Create grouped bar chart comparing component scores"""
-    if scored_gdf is None:
-        return create_empty_figure("No data available")
-
-    # Filter to feasible sites
-    feasible_scores = scored_gdf[scored_gdf['feasible'] == True]
-
-    if len(feasible_scores) == 0:
-        return create_empty_figure("No feasible sites found")
-
-    top_tracts = feasible_scores.nlargest(min(top_n, len(feasible_scores)), 'composite_score')
-
-    # Create tract labels
-    tract_labels = [
-        f"...{str(geoid)[-4:]}" if 'GEOID' in top_tracts.columns
-        else f"Tract {i + 1}"
-        for i, geoid in enumerate(top_tracts['GEOID'] if 'GEOID' in top_tracts.columns
-                                  else range(len(top_tracts)))
-    ]
-
-    fig = go.Figure()
-
-    components = [
-        ('demand_score', 'Demand', '#3498db'),
-        ('infrastructure_score', 'Infrastructure', '#2ecc71'),
-        ('accessibility_score', 'Accessibility', '#e74c3c'),
-        ('equity_feasibility_score', 'Equity/Feasibility', '#9b59b6')
-    ]
-
-    for col, name, color in components:
-        if col in top_tracts.columns:
-            fig.add_trace(go.Bar(
-                name=name,
-                x=tract_labels,
-                y=top_tracts[col],
-                marker_color=color,
-                hovertemplate=f'{name}: %{{y:.2f}}<extra></extra>'
-            ))
-
-    fig.update_layout(
-        title=f"Component Score Breakdown - Top {len(top_tracts)} Tracts",
-        barmode='group',
-        height=450,
-        xaxis=dict(
-            title="Census Tract",
-            tickangle=-45,
-            tickfont=dict(size=10)
-        ),
-        yaxis=dict(title="Score", range=[0, 100]),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        paper_bgcolor='white',
-        plot_bgcolor='rgba(240,240,240,0.5)',
-        font=dict(family="Arial", size=12)
-    )
-
-    return fig
-
 
 def create_radar_chart(selected_sites: gpd.GeoDataFrame) -> go.Figure:
     """Create radar chart comparing selected sites"""
