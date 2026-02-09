@@ -149,8 +149,19 @@ class TruckChargingSiteSelector:
         The goal: Let scoring determine feasibility, not hard filters.
         """
         df = self.gdf.copy()
+
         feasible = pd.Series(True, index=df.index)
         constraints = self.config['constraints']
+        # Constraint (optional): Only include tracts within the secondary network buffer
+        if constraints.get('only_within_secondary_buffer', False):
+            col = 'touched_0.5mi_secondary_buffer'
+            if col in df.columns:
+                within = df[col].fillna(0).astype(int) == 1
+                feasible &= within
+                print(f"    Within 0.5-mi secondary buffer: {feasible.sum()} tracts pass (excluded {(~within).sum()} tracts)")
+            else:
+                print(f"    Secondary buffer constraint enabled, but {col} column not found")
+
         min_person = constraints.get('min_person_trips', 10)
         
         print("  Applying minimal constraints:")
@@ -169,7 +180,6 @@ class TruckChargingSiteSelector:
             feasible &= person_trips >= min_person
             print(f"    Person trips ≥ 10: {feasible.sum()} tracts pass")
 
-
         # Constraint 1.5 (optional): Only include rural tracts
         # Controlled by UI toggle "Only include rural tracts".
         # Preferred column is `rural_flag` (1=rural, 0=not rural), but we fall back
@@ -182,12 +192,6 @@ class TruckChargingSiteSelector:
                 rf = df['rural_flag']
                 rf_num = pd.to_numeric(rf, errors='coerce')
                 rural_mask = (rf_num.fillna(0).astype(float) >= 1)
-            elif 'is_rural' in df.columns:
-                rural_mask = df['is_rural'].fillna(False).astype(bool)
-            elif 'rural' in df.columns:
-                rural_mask = df['rural'].fillna(False).astype(bool)
-            elif 'urban_rural_context' in df.columns:
-                rural_mask = df['urban_rural_context'].fillna('').astype(str).str.lower().eq('rural')
 
             if rural_mask is not None:
                 feasible &= rural_mask
@@ -245,6 +249,24 @@ class TruckChargingSiteSelector:
         Based on LOCUS trip data, AADT traffic, domiciled vehicles, stop duration, AND TEMPORAL PATTERNS.
         """
         df = self.gdf.copy()
+
+        # --- Persist demand subfactor scores for export (0-100) ---
+        # Initialize to 0 so the columns always exist even if a component is skipped.
+        self.gdf['home_end_score'] = 0
+        self.gdf['workplace_end_score'] = 0
+        self.gdf['other_end_score'] = 0
+        self.gdf['weekday_trip_score'] = 0
+        self.gdf['weekend_trip_score'] = 0
+        self.gdf['equity_community_trip_score'] = 0
+        self.gdf['non_equity_community_trip_score'] = 0
+        self.gdf['demand_stability_score'] = 0
+        self.gdf['peak_intensity_score'] = 0
+
+        # Component-level rollups inside demand
+        self.gdf['purpose_component_score'] = 0
+        self.gdf['day_of_week_component_score'] = 0
+        self.gdf['equity_trips_component_score'] = 0
+        # temporal_component_score is set below when available
         
         # IMPORTANT:
         # "demand_weights" contains multiple *separate* subfactor groups
@@ -265,6 +287,11 @@ class TruckChargingSiteSelector:
             work_score = self._normalize_score_with_density(df.get('purpose_2_trips', 0), use_density=True)
             other_score = self._normalize_score_with_density(df.get('purpose_3_trips', 0), use_density=True)
 
+            # Persist subfactor scores for export
+            self.gdf['home_end_score'] = home_score
+            self.gdf['workplace_end_score'] = work_score
+            self.gdf['other_end_score'] = other_score
+
             if self._is_group_disabled(demand_weights, ['home_end_weight', 'workplace_end_weight', 'other_end_weight']):
                 print('  Trip purpose weights set to 0 → skipping purpose component')
             else:
@@ -276,11 +303,16 @@ class TruckChargingSiteSelector:
                 purpose_score = (home_score * w_home + work_score * w_work + other_score * w_other)
                 weight = component_weights.get('purpose', 0.35)
                 demand_components.append(('purpose', purpose_score, weight))
+                self.gdf['purpose_component_score'] = purpose_score
 
         # Component 2: Day of week
         if all(col in df.columns for col in ['dow_1_trips', 'dow_2_3_trips']):
             weekday_score = self._normalize_score_with_density(df.get('dow_1_trips', 0), use_density=True)
             weekend_score = self._normalize_score_with_density(df.get('dow_2_3_trips', 0), use_density=True)
+
+            # Persist subfactor scores for export
+            self.gdf['weekday_trip_score'] = weekday_score
+            self.gdf['weekend_trip_score'] = weekend_score
 
             if self._is_group_disabled(demand_weights, ['weekday_weight', 'weekend_weight']):
                 print('  Day-of-week weights set to 0 → skipping day_of_week component')
@@ -293,11 +325,16 @@ class TruckChargingSiteSelector:
                 dow_score = (weekday_score * w_wd + weekend_score * w_we)
                 weight = component_weights.get('day_of_week', 0.25)
                 demand_components.append(('day_of_week', dow_score, weight))
+                self.gdf['day_of_week_component_score'] = dow_score
 
         # Component 3: Equity vs non-equity trips
         if all(col in df.columns for col in ['equity_0_trips', 'equity_1_trips']):
             non_equity_score = self._normalize_score_with_density(df.get('equity_0_trips', 0), use_density=True)
             equity_score = self._normalize_score_with_density(df.get('equity_1_trips', 0), use_density=True)
+
+            # Persist subfactor scores for export
+            self.gdf['equity_community_trip_score'] = equity_score
+            self.gdf['non_equity_community_trip_score'] = non_equity_score
 
             if self._is_group_disabled(demand_weights, ['equity_community_weight', 'non_equity_community_weight']):
                 print('  Equity-trip weights set to 0 → skipping equity_trips component')
@@ -310,6 +347,7 @@ class TruckChargingSiteSelector:
                 equity_trips_score = (equity_score * w_eq + non_equity_score * w_non)
                 weight = component_weights.get('equity_trips', 0.20)
                 demand_components.append(('equity_trips', equity_trips_score, weight))
+                self.gdf['equity_trips_component_score'] = equity_trips_score
 
         # Component 4: TEMPORAL DEMAND PATTERN (keep existing control logic)
         stability_col = None
@@ -324,6 +362,9 @@ class TruckChargingSiteSelector:
         if stability_col and peak_col:
             stability_score = df[stability_col]
             peak_score = df[peak_col]
+            # Persist raw temporal subfactor scores (already 0–100)
+            self.gdf['demand_stability_score'] = stability_score
+            self.gdf['peak_intensity_score'] = peak_score
             if self._is_group_disabled(demand_weights, ['temporal_stability_weight', 'temporal_peak_weight']):
                 print('  Temporal weights set to 0 → skipping temporal_pattern component')
             else:
@@ -368,6 +409,16 @@ class TruckChargingSiteSelector:
         """
         df = self.gdf.copy()
         scores = pd.Series(0, index=df.index)
+
+        # Persist accessibility subfactor scores for export (0-100)
+        self.gdf['network_density_score'] = 0
+        self.gdf['grocery_colocation_score'] = 0
+        self.gdf['gas_station_colocation_score'] = 0
+
+        # Persist infrastructure subfactor scores for export (0-100)
+        self.gdf['charger_gap_score'] = 0
+        self.gdf['park_ride_colocation_score'] = 0
+        self.gdf['government_colocation_score'] = 0
     
         # Merge user-provided weights with defaults so missing keys never crash scoring
         _infra_defaults = {
@@ -438,6 +489,11 @@ class TruckChargingSiteSelector:
             gap_score = 100.0 * (dist_fill.clip(0, cap) / cap)
             gap_score = gap_score.clip(0, 100)
 
+            # Persist subfactor score for export
+            self.gdf['charger_gap_score'] = gap_score
+
+            self.gdf['charger_gap_score'] = gap_score
+
             w = float(infra_weights.get('truck_charger_gap_weight', 0) or 0)
             scores += gap_score * w
 
@@ -454,6 +510,9 @@ class TruckChargingSiteSelector:
             park_ride_score = self._normalize_score(pr_fill)
             park_ride_score = pd.to_numeric(park_ride_score, errors="coerce").fillna(0).clip(0, 100)
 
+            # Persist subfactor score for export
+            self.gdf['park_ride_colocation_score'] = park_ride_score
+
             w = float(infra_weights.get('park_ride_weight', 0) or 0)
             scores += park_ride_score * w
 
@@ -468,6 +527,9 @@ class TruckChargingSiteSelector:
 
             gov_score = self._normalize_score(gov_fill)
             gov_score = pd.to_numeric(gov_score, errors="coerce").fillna(0).clip(0, 100)
+
+            # Persist subfactor score for export
+            self.gdf['government_colocation_score'] = gov_score
 
             w = float(infra_weights.get('government_weight', 0) or 0)
             scores += gov_score * w
@@ -527,6 +589,7 @@ class TruckChargingSiteSelector:
             # Network Density (D3AAO is already a density metric: mi/sq mi) - no conversion
             if 'D3AAO' in df.columns:
                 network_score = self._normalize_score(df['D3AAO'])
+                self.gdf['network_density_score'] = network_score
                 scores += network_score * access_weights.get('network_weight', 0)
 
             # Co-location with grocery stores (prefer 5mi buffer; fallback to in-tract)
@@ -542,6 +605,7 @@ class TruckChargingSiteSelector:
                     break
             if grocery_within is not None:
                 grocery_score = self._normalize_score(df[grocery_within])
+                self.gdf['grocery_colocation_score'] = grocery_score
                 scores += grocery_score * access_weights.get('grocery_weight', 0)
             else:
                 grocery_in = None
@@ -551,6 +615,7 @@ class TruckChargingSiteSelector:
                         break
                 if grocery_in is not None:
                     grocery_score = self._normalize_score_with_density(df[grocery_in], use_density=True)
+                    self.gdf['grocery_colocation_score'] = grocery_score
                     scores += grocery_score * access_weights.get('grocery_weight', 0)
 
             # Co-location with gas stations (prefer 5mi buffer; fallback to in-tract)
@@ -566,6 +631,7 @@ class TruckChargingSiteSelector:
                     break
             if gas_within is not None:
                 gas_score = self._normalize_score(df[gas_within])
+                self.gdf['gas_station_colocation_score'] = gas_score
                 scores += gas_score * access_weights.get('gas_station_weight', 0)
             else:
                 gas_in = None
@@ -575,6 +641,7 @@ class TruckChargingSiteSelector:
                         break
                 if gas_in is not None:
                     gas_score = self._normalize_score_with_density(df[gas_in], use_density=True)
+                    self.gdf['gas_station_colocation_score'] = gas_score
                     scores += gas_score * access_weights.get('gas_station_weight', 0)
 
         accessibility_score = np.clip(scores, 0, 100)
@@ -682,6 +749,13 @@ class TruckChargingSiteSelector:
         """
         df = self.gdf.copy()
         scores = pd.Series(0, index=df.index)
+
+        # Persist equity/feasibility subfactor scores for export (0-100)
+        self.gdf['ej_access_score'] = 0
+        self.gdf['landuse_suitability_score'] = 0
+        self.gdf['commercial_industrial_score'] = 0
+        # Positive 0-100 penalty score (applied as subtraction in composite)
+        self.gdf['protected_land_penalty_score'] = 0
     
         _equity_defaults = {
             'ej_priority_weight': 0.40,
@@ -705,11 +779,13 @@ class TruckChargingSiteSelector:
         # Benefit 1: EJ priority access
         if 'ej_priority_score' in df.columns:
             ej_score = self._normalize_score(df['ej_priority_score'])
+            self.gdf['ej_access_score'] = ej_score
             scores += ej_score * equity_weights.get('ej_priority_weight', 0)
     
         # Benefit 2: Land use / truck suitability
         if 'truck_suitability_final' in df.columns:
             landuse_suit = self._normalize_score(df['truck_suitability_final'])
+            self.gdf['landuse_suitability_score'] = landuse_suit
             scores += landuse_suit * equity_weights.get('landuse_suit_weight', 0)
     
         # Benefit 3: Commercial + Industrial land use share
@@ -717,6 +793,7 @@ class TruckChargingSiteSelector:
         ind  = pd.to_numeric(df.get('landuse_pct_industrial', 0), errors='coerce').fillna(0)
         comm_ind = (comm + ind).clip(0, 100)
         comm_ind_score = self._normalize_score(comm_ind)
+        self.gdf['commercial_industrial_score'] = comm_ind_score
         scores += comm_ind_score * equity_weights.get('commercial_industrial_weight', 0)
     
         # Penalty: Protected land share (higher protected = larger penalty)
@@ -728,6 +805,7 @@ class TruckChargingSiteSelector:
         if protected_col is not None:
             protected = pd.to_numeric(df[protected_col], errors='coerce').fillna(0).clip(0, 100)
             protected_score = self._normalize_score(protected)
+            self.gdf['protected_land_penalty_score'] = protected_score
             scores -= protected_score * equity_weights.get('protected_penalty_weight', 0)
     
         # Clip to 0-100
@@ -815,6 +893,38 @@ class TruckChargingSiteSelector:
             'equity_feasibility_score': equity_feasibility,
             'composite_score': composite,
             'feasible': feasible,
+
+            # --- Subfactor scores (export-ready; 0-100) ---
+            # Demand subfactors
+            'home_end_score': self.gdf.get('home_end_score', 0),
+            'workplace_end_score': self.gdf.get('workplace_end_score', 0),
+            'other_end_score': self.gdf.get('other_end_score', 0),
+            'weekday_trip_score': self.gdf.get('weekday_trip_score', 0),
+            'weekend_trip_score': self.gdf.get('weekend_trip_score', 0),
+            'equity_community_trip_score': self.gdf.get('equity_community_trip_score', 0),
+            'non_equity_community_trip_score': self.gdf.get('non_equity_community_trip_score', 0),
+            'demand_stability_score': self.gdf.get('demand_stability_score', 0),
+            'peak_intensity_score': self.gdf.get('peak_intensity_score', 0),
+            'purpose_component_score': self.gdf.get('purpose_component_score', 0),
+            'day_of_week_component_score': self.gdf.get('day_of_week_component_score', 0),
+            'equity_trips_component_score': self.gdf.get('equity_trips_component_score', 0),
+            'temporal_component_score': self.gdf.get('temporal_component_score', 0),
+
+            # Infrastructure subfactors
+            'charger_gap_score': self.gdf.get('charger_gap_score', 0),
+            'park_ride_colocation_score': self.gdf.get('park_ride_colocation_score', 0),
+            'government_colocation_score': self.gdf.get('government_colocation_score', 0),
+
+            # Accessibility subfactors
+            'network_density_score': self.gdf.get('network_density_score', 0),
+            'grocery_colocation_score': self.gdf.get('grocery_colocation_score', 0),
+            'gas_station_colocation_score': self.gdf.get('gas_station_colocation_score', 0),
+
+            # Equity/feasibility subfactors
+            'ej_access_score': self.gdf.get('ej_access_score', 0),
+            'landuse_suitability_score': self.gdf.get('landuse_suitability_score', 0),
+            'commercial_industrial_score': self.gdf.get('commercial_industrial_score', 0),
+            'protected_land_penalty_score': self.gdf.get('protected_land_penalty_score', 0),
             
             # Temporal metadata
             'temporal_stability': self.gdf.get('truck_temporal_stability_score', 0),
@@ -831,21 +941,6 @@ class TruckChargingSiteSelector:
             
             # Urban/rural context
             'urban_rural_context': urban_rural,
-            # Explicit rural flag passthrough (needed for UI toggle + rankings table)
-            # Prefer rural_flag when present; otherwise derive from common alternatives.
-            'rural_flag': (
-                self.gdf.get(
-                    'rural_flag',
-                    self.gdf.get(
-                        'is_rural',
-                        self.gdf.get(
-                            'rural',
-                            self.gdf.get('urban_rural_context', '').astype(str).str.strip().str.lower().eq('rural').astype(int)
-                            if 'urban_rural_context' in self.gdf.columns else 0
-                        )
-                    )
-                )
-            ),
             'urban_context_bonus': self.gdf.get('urban_context_bonus', 0),
             'rural_context_bonus': self.gdf.get('rural_context_bonus', 0),
             'mixed_use_bonus': self.gdf.get('mixed_use_bonus', 0),
