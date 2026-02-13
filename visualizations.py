@@ -1319,7 +1319,7 @@ def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
         fig.update_layout(
             mapbox=dict(style='carto-positron', zoom=6.5, center={'lat': center_lat, 'lon': center_lon}),
             margin={'r': 0, 't': 50, 'l': 0, 'b': 0},
-            title=dict(text='Optimal Truck Charging Sites - Massachusetts', font=dict(size=18, color='#2c3e50', family='Arial Black'), x=0.5, xanchor='center'),
+            title=dict(text='Optimal Secondary Corridor Sites - Massachusetts', font=dict(size=18, color='#2c3e50', family='Arial Black'), x=0.5, xanchor='center'),
             height=700,
             showlegend=True,
             legend=dict(
