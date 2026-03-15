@@ -582,98 +582,136 @@ def register_callbacks(app):
     # MAP UPDATE CALLBACKS
     # ========================================================================
 
+    # -----------------------------------------------------------------------
+    # CALLBACK A: Capture which tract-link was clicked and store its GEOID.
+    # This is intentionally separate from the map callback so that Dash's
+    # ALL-pattern trigger (fired when new tract-link components appear after
+    # a site-count change) never causes the map to zoom unexpectedly.
+    # -----------------------------------------------------------------------
     @app.callback(
-        Output('overview-map', 'figure'),
+        Output('clicked-geoid-store', 'data'),
+        Input({'type': 'tract-link', 'index': ALL}, 'n_clicks'),
+        State({'type': 'tract-link', 'index': ALL}, 'id'),
+        prevent_initial_call=True
+    )
+    def store_clicked_geoid(n_clicks_list, id_list):
+        """
+        Translate a tract-link click into a stored GEOID string.
+        Only fires when the user genuinely clicks a link (n_clicks > 0).
+        """
+        if not n_clicks_list or not any(n for n in n_clicks_list if n):
+            raise PreventUpdate
+
+        triggered_id = dash.callback_context.triggered_id
+        if not isinstance(triggered_id, dict) or triggered_id.get('type') != 'tract-link':
+            raise PreventUpdate
+
+        clicked_geoid = triggered_id.get('index')
+        if clicked_geoid is None:
+            raise PreventUpdate
+
+        return str(clicked_geoid)
+
+    # -----------------------------------------------------------------------
+    # CALLBACK B: Rebuild the map when analysis data changes, OR zoom when
+    # the user clicks a tract-link.
+    #
+    # WHY map-container + unique id (not overview-map figure):
+    # All sanity checks confirmed the server builds a perfect figure every
+    # time. The browser still showed old markers due to a known Plotly mapbox
+    # bug: Choroplethmapbox + Scattermapbox combined causes React to reuse old
+    # DOM nodes for scatter traces instead of replacing them.
+    #
+    # Fix: output to map-container div and return a dcc.Graph with a UNIQUE ID
+    # on every call. React sees a new id → unmounts old graph → mounts fresh
+    # one → all traces render correctly. Works in Dash 2.17.1 (which does not
+    # support the `key` prop; unique id achieves the same React remount).
+    # -----------------------------------------------------------------------
+    @app.callback(
+        Output('map-container', 'children'),
         [Input('scored-data-store', 'data'),
          Input('selected-sites-store', 'data'),
-         Input({'type': 'tract-link', 'index': ALL}, 'n_clicks')],
-        [State({'type': 'tract-link', 'index': ALL}, 'id'),
-         State('overview-map', 'figure')]
+         Input('clicked-geoid-store', 'data')],
     )
-    def update_overview_map(scored_json, optimal_json, tract_link_clicks, tract_link_ids, current_fig):
-        """Update the main overview map.
-
-        Reliability notes:
-        - We always rebuild the figure from the latest stores so the map stays consistent
-          with the latest analysis result and the site rankings table.
-        - When the user clicks a tract GEOID link, we rebuild and then update the viewport
-          (center/zoom). This avoids edge cases where Patch updates can be dropped and the
-          map appears "stuck" on a previous run.
+    def update_overview_map(scored_json, optimal_json, clicked_geoid):
         """
+        Returns a fresh dcc.Graph with a unique id on every run.
+        The id change forces React to fully remount the component,
+        guaranteeing the correct number of site markers is always shown.
+        """
+        import time as _time
+
+        def _wrap(fig):
+            """Return a dcc.Graph with a unique id so React always remounts."""
+            unique_id = f'overview-map-{int(_time.time() * 1000)}'
+            logger.info(f"[CALLBACK SANITY C] Wrapping graph with id='{unique_id}'")
+            return dcc.Graph(
+                id=unique_id,
+                figure=fig,
+                config={'displayModeBar': True, 'displaylogo': False}
+            )
+
         if scored_json is None or optimal_json is None:
-            return create_initial_map()
+            logger.info("[MAP] Stores empty → returning initial map")
+            return _wrap(create_initial_map())
 
         try:
-            # Parse JSON back to GeoDataFrame
             scored_gdf = gpd.GeoDataFrame.from_features(json.loads(scored_json))
             optimal_gdf = gpd.GeoDataFrame.from_features(json.loads(optimal_json))
 
-            # Set CRS if not present
             if scored_gdf.crs is None:
                 scored_gdf.set_crs('EPSG:4326', inplace=True)
             if optimal_gdf.crs is None:
                 optimal_gdf.set_crs('EPSG:4326', inplace=True)
 
-            # Identify what triggered this callback
-            try:
-                triggered_id = dash.callback_context.triggered_id
-            except Exception:
-                triggered_id = None
+            # ── CALLBACK SANITY A ─────────────────────────────────────────────
+            triggered_id = dash.callback_context.triggered_id
+            logger.info(
+                f"[CALLBACK SANITY A] update_overview_map │ "
+                f"trigger='{triggered_id}' │ "
+                f"optimal_rows={len(optimal_gdf)} │ "
+                f"scored_rows={len(scored_gdf)}"
+            )
+            # ── END CALLBACK SANITY A ─────────────────────────────────────────
 
-            # Always rebuild from the latest stores first (keeps map/table in sync)
             fig = create_optimal_sites_map(scored_gdf, optimal_gdf)
 
-            # If a tract GEOID link was clicked, zoom to that tract.
-            if isinstance(triggered_id, dict) and triggered_id.get('type') == 'tract-link':
-                clicked_geoid = triggered_id.get('index')
-                clicked_geoid_str = str(clicked_geoid) if clicked_geoid is not None else None
+            # ── CALLBACK SANITY B ─────────────────────────────────────────────
+            try:
+                _st = next((t for t in fig.data if getattr(t,'name','')=='Optimal Sites'), None)
+                _sc = len(_st.lat) if _st else 0
+                logger.info(
+                    f"[CALLBACK SANITY B] Figure received │ "
+                    f"star_markers={_sc} │ expected={len(optimal_gdf)} │ "
+                    f"{'✓ MATCH' if _sc == len(optimal_gdf) else '⚠ MISMATCH'}"
+                )
+            except Exception as _e:
+                logger.error(f"[CALLBACK SANITY B] failed: {_e}")
+            # ── END CALLBACK SANITY B ─────────────────────────────────────────
 
+            # Zoom to clicked tract if triggered by a link click
+            if triggered_id == 'clicked-geoid-store' and clicked_geoid:
+                clicked_geoid_str = str(clicked_geoid)
                 target = None
-                if clicked_geoid_str and 'GEOID' in scored_gdf.columns:
+                if 'GEOID' in scored_gdf.columns:
                     target = scored_gdf[scored_gdf['GEOID'].astype(str) == clicked_geoid_str]
-                # Fallback: sometimes users click a GEOID that's only present in selected set
-                if (target is None or len(target) == 0) and clicked_geoid_str and 'GEOID' in optimal_gdf.columns:
+                if (target is None or len(target) == 0) and 'GEOID' in optimal_gdf.columns:
                     target = optimal_gdf[optimal_gdf['GEOID'].astype(str) == clicked_geoid_str]
-
                 if target is not None and len(target) > 0:
                     try:
                         centroid = target.geometry.iloc[0].centroid
-                        fig.update_layout(
-                            mapbox=dict(
-                                center={'lat': float(centroid.y), 'lon': float(centroid.x)},
-                                zoom=11
-                            )
-                        )
+                        fig.update_layout(mapbox=dict(
+                            center={'lat': float(centroid.y), 'lon': float(centroid.x)},
+                            zoom=11
+                        ))
                     except Exception:
-                        # If centroid fails for any reason, just return the rebuilt fig
                         pass
 
-            return fig
+            return _wrap(fig)
+
         except Exception as e:
             logger.error(f"Error updating overview map: {e}", exc_info=True)
-            return create_initial_map()
-
-        try:
-            scored_gdf = gpd.GeoDataFrame.from_features(json.loads(scored_json))
-            
-            # Set CRS if not present
-            if scored_gdf.crs is None:
-                scored_gdf.set_crs('EPSG:4326', inplace=True)
-
-            return (
-                create_choropleth_map(scored_gdf, 'demand_score',
-                                      'Demand Score', COLOR_SCHEMES['demand']),
-                create_choropleth_map(scored_gdf, 'infrastructure_score',
-                                      'Infrastructure Score', COLOR_SCHEMES['infrastructure']),
-                create_choropleth_map(scored_gdf, 'accessibility_score',
-                                      'Accessibility Score', COLOR_SCHEMES['accessibility']),
-                create_choropleth_map(scored_gdf, 'equity_feasibility_score',
-                                      'Equity & Environmental Score', COLOR_SCHEMES['equity'])
-            )
-        except Exception as e:
-            logger.error(f"Error updating component maps: {e}", exc_info=True)
-            empty = create_empty_figure(f"Error: {str(e)}")
-            return empty, empty, empty, empty
+            return _wrap(create_initial_map())
 
     # ========================================================================
     # SITE RANKINGS TABLE CALLBACK

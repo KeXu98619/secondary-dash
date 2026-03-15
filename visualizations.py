@@ -1214,7 +1214,26 @@ def create_choropleth_map(gdf, column, title, colorscale='Viridis'):
 def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
                              selected_gdf: gpd.GeoDataFrame) -> go.Figure:
     """Create comprehensive map showing scored tracts with optimal sites"""
+
+    # ── VIZ SANITY 1: Inputs ─────────────────────────────────────────────────
+    # What arrived at the visualization function. If this number is wrong,
+    # the bug is upstream (callback or selector), not here.
+    _n_selected = len(selected_gdf) if selected_gdf is not None else 0
+    _n_scored   = len(scored_gdf)   if scored_gdf   is not None else 0
+    _sel_geoids = (
+        list(selected_gdf["GEOID"].astype(str))
+        if selected_gdf is not None and "GEOID" in selected_gdf.columns
+        else "no GEOID col"
+    )
+    logger.info(
+        f"[VIZ SANITY 1] create_optimal_sites_map called │ "
+        f"scored_rows={_n_scored} │ selected_rows={_n_selected} │ "
+        f"selected_GEOIDs={_sel_geoids}"
+    )
+    # ── END VIZ SANITY 1 ─────────────────────────────────────────────────────
+
     if scored_gdf is None or len(scored_gdf) == 0:
+        logger.warning("[VIZ SANITY 1] ⚠ scored_gdf is empty → returning empty figure")
         return create_empty_figure("Run analysis to view results")
 
     try:
@@ -1223,6 +1242,17 @@ def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
             scored_gdf = scored_gdf.to_crs('EPSG:4326')
         if selected_gdf is not None and len(selected_gdf) > 0 and selected_gdf.crs is not None and selected_gdf.crs != 'EPSG:4326':
             selected_gdf = selected_gdf.to_crs('EPSG:4326')
+
+        # ── VIZ SANITY 2: After CRS conversion ───────────────────────────────
+        # Confirms CRS handling didn't silently drop rows.
+        logger.info(
+            f"[VIZ SANITY 2] After CRS check │ "
+            f"scored_rows={len(scored_gdf)} │ "
+            f"selected_rows={len(selected_gdf) if selected_gdf is not None else 0} │ "
+            f"scored_crs={scored_gdf.crs} │ "
+            f"selected_crs={selected_gdf.crs if selected_gdf is not None else 'N/A'}"
+        )
+        # ── END VIZ SANITY 2 ─────────────────────────────────────────────────
 
         geojson_all = json.loads(scored_gdf.to_json())
 
@@ -1283,6 +1313,24 @@ def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
         if selected_gdf is not None and len(selected_gdf) > 0:
             centroids = selected_gdf.geometry.centroid
 
+            # ── VIZ SANITY 3: Centroids ──────────────────────────────────────
+            # Confirms geometry is valid and centroid calculation produced the
+            # right number of points. A count mismatch here means bad geometry.
+            _valid_centroids = centroids.dropna()
+            logger.info(
+                f"[VIZ SANITY 3] Centroids computed │ "
+                f"expected={len(selected_gdf)} │ "
+                f"valid_centroids={len(_valid_centroids)} │ "
+                f"lat_range=[{float(centroids.y.min()):.4f}, {float(centroids.y.max()):.4f}] │ "
+                f"lon_range=[{float(centroids.x.min()):.4f}, {float(centroids.x.max()):.4f}]"
+            )
+            if len(_valid_centroids) != len(selected_gdf):
+                logger.warning(
+                    f"[VIZ SANITY 3] ⚠ {len(selected_gdf) - len(_valid_centroids)} "
+                    f"centroids are null — those sites will be missing from the map"
+                )
+            # ── END VIZ SANITY 3 ─────────────────────────────────────────────
+
             fig.add_trace(go.Scattermapbox(
                 lat=centroids.y,
                 lon=centroids.x,
@@ -1316,7 +1364,56 @@ def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
                 hoverinfo='skip'
             ))
 
+        # ── FORCE-DIFF TRACE ─────────────────────────────────────────────────
+        # Root cause of the frozen-stars bug:
+        #   Dash has a client-side JSON diff that runs BEFORE Plotly renders.
+        #   The 1620-tract choropleth is identical between runs, so Dash's diff
+        #   classifies the whole update as "minor" and skips pushing new trace
+        #   data to Plotly — leaving old star markers on screen.
+        #
+        # Fix: add one invisible marker whose `name` contains the current
+        #   timestamp + site count. This makes the figure JSON structurally
+        #   different on every call. Dash's diff sees a genuine change and
+        #   pushes ALL traces to Plotly, which re-renders the stars correctly.
+        #
+        # The marker is invisible (size=0.001, opacity=0.001, off-screen lat/lon
+        #   outside Massachusetts) so it never appears to the user.
+        import time as _time
+        _n_sites_label = len(selected_gdf) if selected_gdf is not None else 0
+        fig.add_trace(go.Scattermapbox(
+            lat=[0.0001], lon=[0.0001],   # far outside MA viewport
+            mode='markers',
+            marker=dict(size=0.001, opacity=0.001, color='rgba(0,0,0,0)'),
+            showlegend=False,
+            hoverinfo='skip',
+            name=f'_diff_anchor_{_n_sites_label}sites_{int(_time.time() * 1000)}'
+        ))
+        # ── END FORCE-DIFF TRACE ──────────────────────────────────────────────
+
+        # uirevision: if this value stays the SAME between two figure updates,
+        # Plotly's client-side diff skips re-rendering traces (assumes user is
+        # only panning/zooming). That caused star markers to freeze at the old
+        # site count even when the server returned a correct new figure.
+        # Using a fingerprint of the selected GEOIDs forces a full re-render
+        # whenever the selected sites change — different count OR different sites.
+        if selected_gdf is not None and len(selected_gdf) > 0 and 'GEOID' in selected_gdf.columns:
+            _uirevision = '_'.join(sorted(selected_gdf['GEOID'].astype(str).tolist()))
+        else:
+            _uirevision = 'empty'
+
+        # ── VIZ SANITY 4: uirevision value ───────────────────────────────────
+        # THIS is the value Plotly uses to decide whether to re-render.
+        # If you see the same value twice in a row for different site counts,
+        # the uirevision fix is not working and that is the bug.
+        logger.info(
+            f"[VIZ SANITY 4] uirevision fingerprint = '{_uirevision}' │ "
+            f"total_traces_before_layout={len(fig.data)}"
+        )
+        # ── END VIZ SANITY 4 ─────────────────────────────────────────────────
+
         fig.update_layout(
+            uirevision=_uirevision,      # preserves zoom/pan state when sites don't change
+            datarevision=_uirevision,    # tells Plotly the TRACE DATA changed → forces full re-render
             mapbox=dict(style='carto-positron', zoom=6.5, center={'lat': center_lat, 'lon': center_lon}),
             margin={'r': 0, 't': 50, 'l': 0, 'b': 0},
             title=dict(text='Optimal Secondary Corridor Sites - Massachusetts', font=dict(size=18, color='#2c3e50', family='Arial Black'), x=0.5, xanchor='center'),
@@ -1330,6 +1427,42 @@ def create_optimal_sites_map(scored_gdf: gpd.GeoDataFrame,
             ),
             paper_bgcolor='white'
         )
+
+        # ── VIZ SANITY 5: Final figure summary ───────────────────────────────
+        # Last checkpoint before the figure leaves this function.
+        # This is what the browser will actually receive.
+        # If star_count matches selected_rows from SANITY 1 but the browser
+        # still shows the wrong number, the problem is 100% client-side
+        # (uirevision not changing, or browser cache). 
+        try:
+            _star_trace = next(
+                (t for t in fig.data
+                 if getattr(t, "type", "") == "scattermapbox"
+                 and getattr(t, "name", "") == "Optimal Sites"),
+                None
+            )
+            _star_count = len(_star_trace.lat) if _star_trace is not None else 0
+            _layout_uirev = fig.layout.uirevision
+            logger.info(
+                f"[VIZ SANITY 5] Figure ready to return │ "
+                f"total_traces={len(fig.data)} │ "
+                f"star_markers={_star_count} │ "
+                f"uirevision='{_layout_uirev}'"
+            )
+            if _star_count != _n_selected:
+                logger.warning(
+                    f"[VIZ SANITY 5] ⚠ MISMATCH: selected_gdf had {_n_selected} rows "
+                    f"but figure contains {_star_count} star markers — "
+                    f"bug is inside create_optimal_sites_map()"
+                )
+            else:
+                logger.info(
+                    f"[VIZ SANITY 5] ✓ Star count matches selected_rows "
+                    f"({_star_count} = {_n_selected})"
+                )
+        except Exception as _e:
+            logger.error(f"[VIZ SANITY 5] Inspection failed: {_e}")
+        # ── END VIZ SANITY 5 ─────────────────────────────────────────────────
 
         return fig
 

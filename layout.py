@@ -846,11 +846,14 @@ def create_layout():
                                                         id="loading-overview-map",
                                                         type="default",
                                                         children=[
-                                                            dcc.Graph(
-                                                                id='overview-map',
-                                                                figure=create_initial_map(),
-                                                                config={'displayModeBar': True,
-                                                                        'displaylogo': False}
+                                                            html.Div(
+                                                                id='map-container',
+                                                                children=[dcc.Graph(
+                                                                    id='overview-map',
+                                                                    figure=create_initial_map(),
+                                                                    config={'displayModeBar': True,
+                                                                            'displaylogo': False}
+                                                                )]
                                                             )
                                                         ]
                                                     )
@@ -1417,6 +1420,7 @@ def create_layout():
         dcc.Store(id='scored-data-store'),
         dcc.Store(id='selected-sites-store'),
         dcc.Store(id='config-store'),
+        dcc.Store(id='clicked-geoid-store'),
         dcc.Download(id='download-export')
 
     ], style={"backgroundColor": "#f8f9fa", "minHeight": "100vh"})
